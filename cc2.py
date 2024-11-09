@@ -637,7 +637,7 @@ class ARISEProcessor:
             # As each future completes, store the result
             for future in concurrent.futures.as_completed(future_to_var):
                 var = future_to_var[future]
-                try:w
+                try:
                     processed_data = future.result()
                     if processed_data is not None:
                         self.processed_data[var] = processed_data
