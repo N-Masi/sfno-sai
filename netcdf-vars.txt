@@ -1,0 +1,225 @@
+NetCDF File Analysis for: /teamspace/s3_connections/ncar-cesm2-arise-bucket/CESM2-WACCM-SSP245/b.e21.BWSSP245cmip6.f09_g17.CMIP6-SSP2-4.5-WACCM.001/atm/proc/tseries/day_1/b.e21.BWSSP245cmip6.f09_g17.CMIP6-SSP2-4.5-WACCM.001.cam.h1.T.20150101-20241231.nc
+================================================================================
+
+=== Dataset Info ===
+<xarray.Dataset> Size: 57GB
+Dimensions:       (lat: 192, lon: 288, lev: 70, ilev: 71, time: 3650, nbnd: 2)
+Coordinates:
+  * lat           (lat) float64 2kB -90.0 -89.06 -88.12 ... 88.12 89.06 90.0
+  * lon           (lon) float64 2kB 0.0 1.25 2.5 3.75 ... 356.2 357.5 358.8
+  * lev           (lev) float64 560B 5.96e-06 9.827e-06 1.62e-05 ... 976.3 992.6
+  * ilev          (ilev) float64 568B 4.5e-06 7.42e-06 1.223e-05 ... 985.1 1e+03
+  * time          (time) object 29kB 2015-01-01 00:00:00 ... 2024-12-31 00:00:00
+Dimensions without coordinates: nbnd
+Data variables: (12/26)
+    gw            (lat) float64 2kB ...
+    hyam          (lev) float64 560B ...
+    hybm          (lev) float64 560B ...
+    P0            float64 8B ...
+    hyai          (ilev) float64 568B ...
+    hybi          (ilev) float64 568B ...
+    ...            ...
+    n2ovmr        (time) float64 29kB ...
+    f11vmr        (time) float64 29kB ...
+    f12vmr        (time) float64 29kB ...
+    sol_tsi       (time) float64 29kB ...
+    nsteph        (time) float64 29kB ...
+    T             (time, lev, lat, lon) float32 57GB ...
+Attributes:
+    Conventions:       CF-1.0
+    source:            CAM
+    case:              b.e21.BWSSP245cmip6.f09_g17.CMIP6-SSP2-4.5-WACCM.001
+    logname:           cmip6
+    host:              cheyenne4
+    initial_file:      b.e21.BWHIST.f09_g17.CMIP6-historical-WACCM.001.cam.i....
+    topography_file:   /glade/p/cesmdata/cseg/inputdata/atm/cam/topo/fv_0.9x1...
+    model_doi_url:     https://doi.org/10.5065/D67H1H0V
+    time_period_freq:  day_1
+
+=== Dimensions ===
+lat: 192
+lon: 288
+lev: 70
+ilev: 71
+time: 3650
+nbnd: 2
+
+=== Variables ===
+
+Variable: lat
+Shape: (192,)
+Attributes:
+  long_name: latitude
+  units: degrees_north
+
+Variable: lon
+Shape: (288,)
+Attributes:
+  long_name: longitude
+  units: degrees_east
+
+Variable: gw
+Shape: (192,)
+Attributes:
+  long_name: latitude weights
+
+Variable: lev
+Shape: (70,)
+Attributes:
+  long_name: hybrid level at midpoints (1000*(A+B))
+  units: hPa
+  positive: down
+  standard_name: atmosphere_hybrid_sigma_pressure_coordinate
+  formula_terms: a: hyam b: hybm p0: P0 ps: PS
+
+Variable: hyam
+Shape: (70,)
+Attributes:
+  long_name: hybrid A coefficient at layer midpoints
+
+Variable: hybm
+Shape: (70,)
+Attributes:
+  long_name: hybrid B coefficient at layer midpoints
+
+Variable: P0
+Shape: ()
+Attributes:
+  long_name: reference pressure
+  units: Pa
+
+Variable: ilev
+Shape: (71,)
+Attributes:
+  long_name: hybrid level at interfaces (1000*(A+B))
+  units: hPa
+  positive: down
+  standard_name: atmosphere_hybrid_sigma_pressure_coordinate
+  formula_terms: a: hyai b: hybi p0: P0 ps: PS
+
+Variable: hyai
+Shape: (71,)
+Attributes:
+  long_name: hybrid A coefficient at layer interfaces
+
+Variable: hybi
+Shape: (71,)
+Attributes:
+  long_name: hybrid B coefficient at layer interfaces
+
+Variable: ndbase
+Shape: ()
+Attributes:
+  long_name: base day
+
+Variable: nsbase
+Shape: ()
+Attributes:
+  long_name: seconds of base day
+
+Variable: nbdate
+Shape: ()
+Attributes:
+  long_name: base date (YYYYMMDD)
+
+Variable: nbsec
+Shape: ()
+Attributes:
+  long_name: seconds of base date
+
+Variable: mdt
+Shape: ()
+Attributes:
+  long_name: timestep
+  units: s
+
+Variable: time
+Shape: (3650,)
+Attributes:
+  long_name: time
+  bounds: time_bnds
+
+Variable: date
+Shape: (3650,)
+Attributes:
+  long_name: current date (YYYYMMDD)
+
+Variable: datesec
+Shape: (3650,)
+Attributes:
+  long_name: current seconds of current date
+
+Variable: time_bnds
+Shape: (3650, 2)
+Attributes:
+  long_name: time interval endpoints
+
+Variable: date_written
+Shape: (3650,)
+Attributes:
+
+Variable: time_written
+Shape: (3650,)
+Attributes:
+
+Variable: ndcur
+Shape: (3650,)
+Attributes:
+  long_name: current day (from base day)
+
+Variable: nscur
+Shape: (3650,)
+Attributes:
+  long_name: current seconds of current day
+
+Variable: co2vmr
+Shape: (3650,)
+Attributes:
+  long_name: co2 volume mixing ratio
+
+Variable: ch4vmr
+Shape: (3650,)
+Attributes:
+  long_name: ch4 volume mixing ratio
+
+Variable: n2ovmr
+Shape: (3650,)
+Attributes:
+  long_name: n2o volume mixing ratio
+
+Variable: f11vmr
+Shape: (3650,)
+Attributes:
+  long_name: f11 volume mixing ratio
+
+Variable: f12vmr
+Shape: (3650,)
+Attributes:
+  long_name: f12 volume mixing ratio
+
+Variable: sol_tsi
+Shape: (3650,)
+Attributes:
+  long_name: total solar irradiance
+  units: W/m2
+
+Variable: nsteph
+Shape: (3650,)
+Attributes:
+  long_name: current timestep
+
+Variable: T
+Shape: (3650, 70, 192, 288)
+Attributes:
+  mdims: 1
+  units: K
+  long_name: Temperature
+  cell_methods: time: mean
+
+=== Coordinates ===
+Coordinates:
+  * lat      (lat) float64 2kB -90.0 -89.06 -88.12 -87.17 ... 88.12 89.06 90.0
+  * lon      (lon) float64 2kB 0.0 1.25 2.5 3.75 5.0 ... 355.0 356.2 357.5 358.8
+  * lev      (lev) float64 560B 5.96e-06 9.827e-06 1.62e-05 ... 976.3 992.6
+  * ilev     (ilev) float64 568B 4.5e-06 7.42e-06 1.223e-05 ... 985.1 1e+03
+  * time     (time) object 29kB 2015-01-01 00:00:00 ... 2024-12-31 00:00:00

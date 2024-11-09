@@ -1,0 +1,13 @@
+https://registry.opendata.aws/ncar-cesm2-arise/
+
+b.e21                        # Model version/branch
+BW                          # Experiment type (BW = Bias Corrected WACCM)
+f09_g17                     # Grid resolution (f09 = 0.9°×1.25° atmosphere, g17 = 1° ocean)
+SSP245-TSMLT-GAUSS-DEFAULT # Scenario name (SSP245 pathway with TSMLT geoengineering)
+001                         # Ensemble member number
+cam                         # Model component (Community Atmosphere Model)
+h1                         # History tape frequency (h1 = hourly, h6 = 6-hourly)
+TREFHT                     # Variable name
+20350101-20441231          # Time period (YYYYMMDD-YYYYMMDD)
+nc                         # File format (NetCDF)
+
