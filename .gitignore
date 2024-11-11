@@ -7,3 +7,4 @@ arise_processed/
 modulus.venv*
 modulus.venv/
 modulus.venv.3.10/
+__pycache__/
