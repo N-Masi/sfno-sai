@@ -236,6 +236,7 @@ Werkzeug==3.0.4
 widgetsnbextension==4.0.13
 wrapt==1.16.0
 xarray==2024.7.0
+xbatcher
 yarg==0.1.9
 yarl==1.13.1
 zarr==2.18.2

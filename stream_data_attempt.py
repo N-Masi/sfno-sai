@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import xarray as xr
 import s3fs
 from torch.utils.data import DataLoader
+import xbatcher
 import pdb
 
 class NetCDFS3Dataset(Dataset):
@@ -60,12 +61,22 @@ aws_url = f"s3://{s3_bucket}/{s3_path}"
 with fs.open(aws_url) as fileObj:
   ds = xr.open_dataset(fileObj, engine='h5netcdf')
 
+bgen = xbatcher.BatchGenerator(ds, {'time': 4})
+pdb.set_trace()
+#for batch in bgen:
+#	pdb.set_trace()
+#	break
+
 # Create the dataset
-# dataset = NetCDFS3Dataset(s3_bucket=s3_bucket, s3_path=s3_path, variables=variables)
+dataset = NetCDFS3Dataset(s3_bucket=s3_bucket, s3_path=s3_path, variables=variables)
+pdb.set_trace()
 
 # # Use DataLoader to iterate over the dataset in batches
 batch_size = 4  # Adjust based on memory and model requirements
 data_loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+pdb.set_trace()
+ttrain, ttest = next(iter(data_loader))
+pdb.set_trace()
 
 # # Example of iterating over batches in training loop
 for epoch in range(1):
