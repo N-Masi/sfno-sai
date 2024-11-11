@@ -4,3 +4,6 @@ arise_processed/
 .cursor-server/
 .cursor_server
 .vimrc
+modulus.venv*
+modulus.venv/
+modulus.venv.3.10/
