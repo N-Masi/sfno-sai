@@ -15,7 +15,7 @@ dataloader = Darcy2D(
     resolution=16, batch_size=ACE_BATCH_SIZE, nr_permeability_freq=5, normaliser=normaliser
 )
 
-model = get_ace_sfno(img_shape=(16,16), in_chans=1, out_chans=1)
+model = get_ace_sto_sfno(img_shape=(16,16), in_chans=1, out_chans=1)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()

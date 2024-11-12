@@ -8,7 +8,7 @@ DEVICE="cuda"
 
 # img_shape=(192,288) [lat x long], time steps (the number of samples) = 35*365=12775
 # TODO: should we not model SO2/SO4 vars in output?
-model = get_ace_sfno(img_shape=(192,288), in_chans=42, out_chans=42, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=42, out_chans=42, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
