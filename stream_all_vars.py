@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader
 import xbatcher
 import pdb
 from ace_helpers import *
+from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
+
+DEVICE="cuda"
 
 fs = s3fs.S3FileSystem(anon=True)
 s3_bucket = "ncar-cesm2-arise"
@@ -34,6 +37,12 @@ Index to corresponding pressure (hPa):
     62: 820.8583686500788
     69: 992.556095123291
 '''
+
+# TODO: instantiate ace-sto model
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=???, out_chans=???, device=DEVICE)
+optimizer = get_ace_optimizer(model)
+scheduler = get_ace_lr_scheduler(optimizer)
+loss_fn = AceLoss()
 
 # outer nested loops: for each epoch, for each simulation 001-009:
     # instantiate X & Y as empty torch.utils.data.Dataset | Y is shifted one timestep ahead of X
