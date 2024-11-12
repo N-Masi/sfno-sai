@@ -1,3 +1,6 @@
+# example of how to use modulus for an SFNO on Oscar
+# for setup, see: https://docs.google.com/document/d/1EX7XAli5ZD4qx42Z0CDNn4iU1U8jv2HC6fvU87xYbTU/
+
 import torch
 import modulus
 from modulus.datapipes.benchmarks.darcy import Darcy2D
