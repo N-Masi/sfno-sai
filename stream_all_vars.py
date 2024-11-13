@@ -83,6 +83,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     Y = torch.empty(0)
 
     # append data (with dim=1) for each variable to X & Y
+    data_to_norm = {}
     for var_path, var_name, vert_levels, forcing_only in variables:
         s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
         # open s3 file
@@ -95,12 +96,20 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
                     data_xarray = ds.isel()[[var_name]]
                 num_time_steps = len(data_xarray.time)
                 data = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
-                normalizer.fit(data, var_name)
-                normed_data = normalizer.normalize(data, var_name, 'residual')
-                X = torch.concat((X, normed_data[:-1]), dim=1)
-                if not forcing_only:
-                    Y = torch.concat((Y, normed_data[1:]), dim=1)
-        logger.info(f"Done loading {var_name}")
+                data_to_norm[var_name] = data
+                # normalizer.fit(data, var_name)
+                # normed_data = normalizer.normalize(data, var_name, 'residual')
+        logger.info(f"Done loading in {var_name}")
+    normalizer.fit_multiple(data_to_norm)
+    for var_path, var_name, vert_levels, forcing_only in variables:
+        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
+        X = torch.concat((X, normed_data[:-1]), dim=1)
+        if not forcing_only:
+            Y = torch.concat((Y, normed_data[1:]), dim=1)
+        data_to_norm[var_name] = None # clear some memory
+        logger.info(f"Done normalizing {var_name}")
+    data_to_norm = {} # clear some memory
+    logger.info("Preprocessing complete")
 
     # make dataloader out of (X, Y) with batch_size ACE_BATCH_SIZE=4
     # rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
