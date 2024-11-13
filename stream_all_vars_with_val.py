@@ -72,6 +72,41 @@ SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006", "007", "008"]
 SIM_NUMS_VAL = ["009"]
 SIM_NUMS_TEST = ["010"]
 
+# create validation data
+logger.info(f"Loading validation data")
+X_val = torch.empty(0)
+Y_val = torch.empty(0)
+data_to_norm = {}
+for sim_num in SIM_NUMS_VAL:
+    for var_path, var_name, vert_levels, forcing_only in variables:
+        s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
+        # open s3 file
+        with fs.open(s3_file_url) as varfile:
+            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
+                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
+                if vert_levels:
+                    data_xarray = ds.isel(lev=vert_level_indices)[[var_name]]
+                else:
+                    data_xarray = ds.isel()[[var_name]]
+                num_time_steps = len(data_xarray.time)
+                data_to_norm[var_name] = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
+        logger.info(f"Done loading in {var_name}")
+    normalizer.fit_multiple(data_to_norm)
+    logger.info("Done fitting normalizer")
+    for var_path, var_name, vert_levels, forcing_only in variables:
+        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
+        X_val = torch.concat((X_val, normed_data[:-1]), dim=1)
+        if not forcing_only:
+            Y_val = torch.concat((Y_val, normed_data[1:]), dim=1)
+        data_to_norm[var_name] = None # clear some memory
+        logger.info(f"Done normalizing {var_name}")
+    data_to_norm = {} # clear some memory
+val_tds = TensorDataset(X_val, Y_val)
+val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE)
+X_val = torch.empty(0)
+Y_val = torch.empty(0)
+logger.info("Validation data saved and preprocessed")
+
 # outer nested loops: for each simulation 001-008, for each epoch:
 for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
 
@@ -95,10 +130,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
                 else:
                     data_xarray = ds.isel()[[var_name]]
                 num_time_steps = len(data_xarray.time)
-                data = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
-                data_to_norm[var_name] = data
-                # normalizer.fit(data, var_name)
-                # normed_data = normalizer.normalize(data, var_name, 'residual')
+                data_to_norm[var_name] = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
         logger.info(f"Done loading in {var_name}")
     normalizer.fit_multiple(data_to_norm)
     logger.info("Done fitting normalizer")
@@ -116,24 +148,39 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     # rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
     tds = TensorDataset(X, Y)
     data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True) # TODO: shuffle?
+    X = torch.empty(0)
+    Y = torch.empty(0)
 
     # train for this data multiple times (epochs), logging to w&b
     for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
         epoch = single_sim_epoch*(i+1)
         with LaunchLogger("train", epoch=epoch, mini_batch_log_freq=1) as launchlog:
+            model.train()
             for batch in data_loader:
                 torch.cuda.empty_cache()
                 optimizer.zero_grad()
-                pred = model(batch[0].to(DEVICE))
-                loss = loss_fn(pred, batch[1].to(DEVICE))
+                pred = model(batch[0].to(DEVICE, non_blocking=True))
+                loss = loss_fn(pred, batch[1].to(DEVICE, non_blocking=True))
                 loss.backward()
                 optimizer.step()
                 launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
             launchlog.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
             scheduler.step()
-        logger.info(f"Epoch {epoch} done")
+            logger.info(f"Epoch {epoch} training done")
 
-    # save checkpoint of model to w&b
+            # validation for this epoch
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for batch in val_loader:
+                    preds_val = model(batch[0].to(DEVICE, non_blocking=True))
+                    loss_val = loss_fn(preds_val, batch[1].to(DEVICE, non_blocking=True))
+                    val_loss += loss_val.item()
+            avg_val_loss = val_loss / len(val_loader)
+            logger.info(f"Validation loss: {avg_val_loss}")
+            launchlog.log_epoch({"Validation Loss": avg_val_loss})
+
+    # save checkpoint of model [after all #(single_sim_epoch) epochs on one simulation] to w&b
     checkpoint = {
         'epoch': (i+1)*SINGLE_SIM_EPOCHS,
         'model_state_dict': model.state_dict(),
