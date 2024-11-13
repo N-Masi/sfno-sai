@@ -1,142 +1,221 @@
+import torch
+from torch.utils.data import Dataset, DataLoader
+import xarray as xr
+import s3fs
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from scipy.fft import fft2, ifft2, fftfreq
-import matplotlib
 
-# Set random seed for reproducibility
-np.random.seed(0)
+from typing import List, Tuple, Dict
+import logging
+from pathlib import Path
+import time
 
-# Simulation Parameters
-Lx, Ly = 1.0, 1.0       # Domain size
-Nx, Ny = 64, 64         # Number of grid points
-dx, dy = Lx / Nx, Ly / Ny
-dt = 0.001              # Time step
-nt = 500                # Number of time steps
+# Enhanced logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
-# Physical Parameters
-nu = 1e-5               # Viscosity
-kappa = 1e-5            # Thermal diffusivity
-g = 1.0                 # Gravity
-theta0 = 1.0            # Reference temperature
-
-# Create grid
-x = np.linspace(0, Lx, Nx)
-y = np.linspace(0, Ly, Ny)
-X, Y = np.meshgrid(x, y)
-
-# Initialize Fields
-omega = np.zeros((Ny, Nx))          # Vorticity
-theta = np.zeros((Ny, Nx))          # Temperature
-psi = np.zeros((Ny, Nx))            # Streamfunction
-
-# Initial Temperature Perturbation: Gaussian hill in the center
-sigma = 0.1
-theta += 0.5 * np.exp(-((X - 0.5)**2 + (Y - 0.5)**2) / (2 * sigma**2))
-
-# Function to solve Poisson equation using FFT
-def solve_poisson_fft(rhs):
-    # Fourier transform of the right-hand side
-    rhs_hat = fft2(rhs)
-    
-    # Wave numbers
-    kx = fftfreq(Nx, d=dx) * 2 * np.pi
-    ky = fftfreq(Ny, d=dy) * 2 * np.pi
-    kx[0] = 1e-6  # Prevent division by zero
-    ky[0] = 1e-6
-    
-    KX, KY = np.meshgrid(kx, ky)
-    K_squared = KX**2 + KY**2
-    K_squared[K_squared == 0] = 1e-6  # Prevent division by zero
-    
-    # Solve in Fourier space
-    psi_hat = rhs_hat / K_squared
-    
-    # Inverse Fourier transform to get streamfunction
-    psi = np.real(ifft2(psi_hat))
-    return psi
-
-# Function to compute velocity from streamfunction
-def compute_velocity(psi):
-    u =  np.gradient(psi, dy, axis=0)  # dψ/dy
-    v = -np.gradient(psi, dx, axis=1)  # -dψ/dx
-    return u, v
-
-# Function to compute advection terms using central differences
-def advection(f, u, v):
-    f_x = (np.roll(f, -1, axis=1) - np.roll(f, 1, axis=1)) / (2 * dx)
-    f_y = (np.roll(f, -1, axis=0) - np.roll(f, 1, axis=0)) / (2 * dy)
-    return u * f_x + v * f_y
-
-# Animation Setup
-fig, ax = plt.subplots(figsize=(6,5))
-contour = ax.contourf(X, Y, omega, levels=50, cmap='RdBu_r')
-plt.colorbar(contour)
-ax.set_title('Vorticity and Temperature')
-ax.set_xlabel('x')
-ax.set_ylabel('y')
-
-def animate(frame):
-    global omega, theta, psi
-    for _ in range(5):  # Update multiple times per frame for stability
-        # Compute streamfunction from vorticity
-        psi = solve_poisson_fft(-omega)
+class ARISEBatchDataset(Dataset):
+    def __init__(self, 
+                 simulation_number: str = "001",
+                 device: str = "cuda",
+                 verbose: bool = True,
+                 batch_size: int = 4):
+        """
+        Args:
+            simulation_number: ARISE simulation number (001-009)
+            device: torch device for tensors
+            verbose: whether to print detailed progress
+            batch_size: size of batches to process
+        """
+        logger.info(f"Initializing ARISEBatchDataset with simulation {simulation_number} on {device}")
+        start_time = time.time()
         
-        # Compute velocities
-        u, v = compute_velocity(psi)
+        self.device = device
+        self.verbose = verbose
+        self.batch_size = batch_size
         
-        # Update vorticity
-        adv_omega = advection(omega, u, v)
-        diffusion_omega = nu * (np.roll(omega, -1, axis=0) + np.roll(omega, 1, axis=0) +
-                                np.roll(omega, -1, axis=1) + np.roll(omega, 1, axis=1) - 4 * omega) / dx**2
-        buoyancy = (g / theta0) * (np.roll(theta, -1, axis=1) - np.roll(theta, 1, axis=1)) / (2 * dx)
-        omega_new = omega + dt * (-adv_omega + diffusion_omega + buoyancy)
+        logger.info("Connecting to S3 filesystem...")
+        self.fs = s3fs.S3FileSystem(anon=True)
+        self.s3_bucket = "ncar-cesm2-arise"
+        self.simulation_number = simulation_number
         
-        # Update temperature
-        adv_theta = advection(theta, u, v)
-        diffusion_theta = kappa * (np.roll(theta, -1, axis=0) + np.roll(theta, 1, axis=0) +
-                                    np.roll(theta, -1, axis=1) + np.roll(theta, 1, axis=1) - 4 * theta) / dx**2
-        theta_new = theta + dt * (-adv_theta + diffusion_theta)
+        # Define paths with proper simulation number
+        logger.info(f"Setting up paths for simulation {simulation_number}")
+        base_path = f"ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}/atm/proc/tseries/month_1/"
+        self.paths = {
+            'AODVISstdn': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.AODVISstdn.203501-206912.nc", False, True),
+            'SST': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.SST.203501-206912.nc", False, True),
+            'SOLIN': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.SOLIN.203501-206912.nc", False, True),
+            'Q': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.Q.203501-206912.nc", True, False),
+            'U': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.U.203501-206912.nc", True, False),
+            'V': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.V.203501-206912.nc", True, False),
+            'PS': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.PS.203501-206912.nc", False, False),
+            'T': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.T.203501-206912.nc", True, False),
+            'TS': (f"{base_path}b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.{simulation_number}.cam.h0.TS.203501-206912.nc", False, False)
+        }
         
-        # Update fields
-        omega, theta = omega_new, theta_new
+        logger.info("Setting up vertical level indices...")
+        self.vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
+        self.data_cache = {}
         
-        # Apply periodic boundary conditions
-        omega = np.roll(omega, 1, axis=0)
-        omega = np.roll(omega, 1, axis=1)
-        theta = np.roll(theta, 1, axis=0)
-        theta = np.roll(theta, 1, axis=1)
-    
-    # Update plot
-    ax.clear()
-    cont = ax.contourf(X, Y, omega, levels=50, cmap='RdBu_r')
-    ax.set_title(f'Vorticity at frame {frame}')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    return cont.collections
-
-# Choose writer based on availability
-def get_writer():
-    # Try to use ffmpeg
-    try:
-        Writer = animation.writers['ffmpeg']
-        return Writer(fps=30, metadata=dict(artist='Me'), bitrate=1800)
-    except (KeyError, RuntimeError):
-        # Fallback to imagemagick
+        logger.info("Initializing dataset length...")
+        self._initialize_length()
+        
+        # Calculate number of full batches
+        self.num_batches = self.length // self.batch_size
+        self.last_batch_size = self.length % self.batch_size
+        
+        init_time = time.time() - start_time
+        logger.info(f"Dataset initialization completed in {init_time:.2f} seconds")
+        logger.info(f"Total timesteps: {self.length}")
+        logger.info(f"Number of full batches: {self.num_batches}")
+        logger.info(f"Last batch size: {self.last_batch_size}")
+        
+    def _initialize_length(self):
+        """Initialize dataset length using first variable"""
+        first_var = next(iter(self.paths.keys()))
+        path, has_levels, _ = self.paths[first_var]
+        full_path = f"{self.s3_bucket}/{path}"
+        logger.info(f"Determining dataset length from {first_var} at {full_path}")
+        
         try:
-            Writer = animation.writers['imagemagick']
-            return Writer(fps=30)
-        except (KeyError, RuntimeError):
-            print("Neither ffmpeg nor imagemagick is available. Animation will not be saved.")
-            return None
+            with self.fs.open(full_path) as f:
+                ds = xr.open_dataset(f)
+                self.length = len(ds.time) - 1  # -1 because we need pairs
+                logger.info(f"Dataset length initialized: {self.length + 1} timestamps ({self.length} usable pairs)")
+        except Exception as e:
+            logger.error(f"Failed to initialize length: {str(e)}")
+            raise
+            
+    def _load_variable_batch(self, var_name: str, start_idx: int, batch_size: int) -> torch.Tensor:
+        """Load a batch of timesteps for a variable"""
+        start_time = time.time()
+        path, has_levels, _ = self.paths[var_name]
+        full_path = f"{self.s3_bucket}/{path}"
+        
+        if self.verbose:
+            logger.debug(f"Loading {var_name} batch starting at index {start_idx}")
+        
+        try:
+            with self.fs.open(full_path) as f:
+                ds = xr.open_dataset(f)
+                if has_levels:
+                    data = ds[var_name].isel(
+                        time=slice(start_idx, start_idx + batch_size + 1),  # +1 for t+1 prediction
+                        lev=self.vert_level_indices
+                    )
+                    data = data.transpose('time', 'lev', 'lat', 'lon')
+                else:
+                    data = ds[var_name].isel(time=slice(start_idx, start_idx + batch_size + 1))
+                    data = data.expand_dims('lev')
+                    
+                tensor = torch.from_numpy(data.values).float()
+                if self.device == "cuda":
+                    tensor = tensor.cuda()
+                
+                load_time = time.time() - start_time
+                if self.verbose:
+                    logger.debug(f"Loaded {var_name} batch in {load_time:.3f} seconds. Tensor shape: {tensor.shape}")
+                return tensor
+                
+        except Exception as e:
+            logger.error(f"Error loading {var_name} batch at index {start_idx}: {str(e)}")
+            raise
 
-writer = get_writer()
+    def __len__(self) -> int:
+        return self.num_batches + (1 if self.last_batch_size > 0 else 0)
 
-if writer:
-    ani = animation.FuncAnimation(fig, animate, frames=nt//5, interval=50, blit=False)
-    # Save the animation
-    ani.save('vorticity_convection.mp4', writer=writer)
-else:
-    # Just show the animation
-    ani = animation.FuncAnimation(fig, animate, frames=nt//5, interval=50, blit=False)
-    plt.show()
+    def __getitem__(self, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        start_time = time.time()
+        logger.debug(f"Processing batch {batch_idx}")
+        
+        # Determine batch size for this iteration
+        is_last_batch = batch_idx == self.num_batches
+        current_batch_size = self.last_batch_size if is_last_batch else self.batch_size
+        start_idx = batch_idx * self.batch_size
+        
+        # Load input features (t)
+        logger.debug(f"Loading input features for batch starting at index {start_idx}")
+        x_tensors = []
+        for var_name, (_, _, forcing_only) in self.paths.items():
+            x_tensor = self._load_variable_batch(var_name, start_idx, current_batch_size)
+            x_tensors.append(x_tensor[:-1])  # Remove t+1 timestep
+        
+        # Load output features (t+1)
+        logger.debug(f"Loading output features for batch")
+        y_tensors = []
+        for var_name, (_, _, forcing_only) in self.paths.items():
+            if not forcing_only:
+                y_tensor = self._load_variable_batch(var_name, start_idx, current_batch_size)
+                y_tensors.append(y_tensor[1:])  # Use t+1 timesteps
+        
+        # Combine tensors
+        X = torch.cat([t.reshape(current_batch_size, -1, 192, 288) for t in x_tensors], dim=1)
+        Y = torch.cat([t.reshape(current_batch_size, -1, 192, 288) for t in y_tensors], dim=1)
+        
+        total_time = time.time() - start_time
+        logger.debug(f"Total time to load batch {batch_idx}: {total_time:.3f} seconds")
+        
+        return X, Y
+
+def get_arise_batch_dataloader(simulation_number: str = "001",
+                             batch_size: int = 4,
+                             device: str = "cuda",
+                             verbose: bool = True) -> DataLoader:
+    """Create a DataLoader for ARISE climate data with efficient batch processing."""
+    logger.info(f"Creating BatchDataLoader with batch_size={batch_size} on {device}")
+    
+    dataset = ARISEBatchDataset(
+        simulation_number=simulation_number,
+        device=device,
+        verbose=verbose,
+        batch_size=batch_size
+    )
+    
+    logger.info("Initializing BatchDataLoader...")
+    loader = DataLoader(
+        dataset,
+        batch_size=None,  # We handle batching in the dataset
+        shuffle=True,
+        num_workers=4,
+        pin_memory=(device=="cuda")
+    )
+    
+    logger.info(f"BatchDataLoader created successfully. {len(dataset)} batches")
+    return loader
+
+if __name__ == "__main__":
+    logger.info("Starting ARISE batch data loader test...")
+    
+    try:
+        start_time = time.time()
+        batch_size = 4
+        
+        logger.info(f"Creating test dataset with batch_size={batch_size}...")
+        test_dataset = ARISEBatchDataset(
+            simulation_number="001",
+            verbose=True,
+            batch_size=batch_size
+        )
+        
+        logger.info(f"{'='*50}")
+        logger.info(f"Dataset contains {len(test_dataset)} batches")
+        
+        # Test first batch
+        logger.info("Loading first batch...")
+        batch_start = time.time()
+        X1, Y1 = test_dataset[0]
+        batch1_time = time.time() - batch_start
+        logger.info(f"Successfully loaded first batch")
+        logger.info(f"First batch input shape: {X1.shape}")
+        logger.info(f"First batch output shape: {Y1.shape}")
+        logger.info(f"First batch load time: {batch1_time:.2f} seconds")
+        
+        total_time = time.time() - start_time
+        logger.info(f"\nTest completed successfully in {total_time:.2f} seconds")
+        
+    except Exception as e:
+        logger.error(f"Test failed: {str(e)}", exc_info=True)

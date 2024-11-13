@@ -1,10 +1,7 @@
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import TensorDataset, DataLoader
 import xarray as xr
 import s3fs
-from torch.utils.data import DataLoader
-import xbatcher
-import pdb
 from ace_helpers import *
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 
@@ -12,13 +9,22 @@ DEVICE="cuda"
 
 fs = s3fs.S3FileSystem(anon=True)
 s3_bucket = "ncar-cesm2-arise"
+s3_path_prefix = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 
-# tuples of (path to monthly data for variable, whether different vertical levels are needed, forcing-only?)
-s3_path_T = ("ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001.cam.h0.T.203501-206912.nc", True, False) # temperature
-s3_path_Q = ("ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001.cam.h0.Q.203501-206912.nc", True, False) # specific humidity
-s3_path_PS = ("ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001.cam.h0.PS.203501-206912.nc", False, False) # surface pressure
-# TODO: get other variables (windspeed & AOD)
-variable_paths = [s3_path_T, s3_path_Q, s3_path_PS]
+# tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, forcing-only?)
+# input only (forcings):
+s3_path_AODVISstdn = (".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, True) # this is the signal of the aerosol injections by controller
+s3_path_SST = (".cam.h0.SST.203501-206912.nc", "SST", False, True) # sea surface/skin temp (different from TS)
+s3_path_SOLIN = (".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, True) # downward shortwave radiative flux at TOA
+# input & output:
+s3_path_T = (".cam.h0.T.203501-206912.nc", "T", True, False) # temperature
+s3_path_Q = (".cam.h0.Q.203501-206912.nc", "Q", True, False) # specific humidity
+s3_path_U = (".cam.h0.U.203501-206912.nc", "U", True, False) # zonal wind
+s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, False) # meridonal wind
+s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, False) # surface pressure
+s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, False) # surface temperature of land or sea-ice (radiative)
+# TODO: do we need diagnostic (output-only) variables? Mostly seem to be radiation
+variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
@@ -38,19 +44,68 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-# TODO: instantiate ace-sto model
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=???, out_chans=???, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
 
-# outer nested loops: for each epoch, for each simulation 001-009:
-    # instantiate X & Y as empty torch.utils.data.Dataset | Y is shifted one timestep ahead of X
-    # for variable in variable paths
+# logging for w&b
+logger = PythonLogger("main")
+initialize_wandb(
+    project="SFNO_test",
+    entity="nickmasi",
+    name="Train with stream_all_vars",
+    mode="online",
+    resume="never", # use this to separate runs?
+)
+LaunchLogger.initialize(use_wandb=True)
+logger.info("Starting Training!")
+
+SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006", "007", "008"]
+SIM_NUMS_VAL = ["009"]
+SIM_NUMS_TEST = ["010"]
+
+# TODO
+# outer nested loops: for each simulation 001-008, for each epoch:
+for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
+
+    # instantiate X & Y as empty tensors
+    # Y needs to be shifted one timestep ahead of X
+    X = torch.empty(0)
+    Y = torch.empty(0)
+
+    # append data (with dim=1) for each variable to X & Y
+    for var_path, var_name, vert_levels, forcing_only in variables:
+        s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
         # open s3 file
-        # if varialbe[1]: 
-            # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
-        # else:
-            # append to X & Y (not to Y if forcing-only)
-    # make dataloaders of X & Y with batch_size ACE_BATCH_SIZE=4 | rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
-    # train for this data, logging to w&b
+        with fs.open(s3_file_url) as varfile:
+            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
+                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
+                if vert_levels:
+                    data_xarray = ds.isel(lev=vert_level_indices)[[var_name]]
+                else:
+                    data_xarray = ds.isel()[[var_name]]
+                data = torch.from_numpy(data_xarray.to_array().values).reshape(4, -1, 192, 288)
+                X = torch.concat((X, data[:-1]), dim=1)
+                if not forcing_only:
+                    Y = torch.concat((Y, data[1:]), dim=1)
+                    
+    # TODO: normalize X & Y (Appendix H of ACE paper)
+
+    # make dataloader out of (X, Y) with batch_size ACE_BATCH_SIZE=4
+    # rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
+    tds = TensorDataset(X, Y)
+    data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True) # TODO: shuffle?
+
+     # train for this data multiple times (epochs), logging to w&b
+    for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
+        with LaunchLogger("train", epoch=single_sim_epoch*(i+1), mini_batch_log_freq=1) as launchlog:
+            for batch in data_loader:
+                pred = model(batch[0].to(DEVICE))
+                loss = loss_fn(pred, batch[1].to(DEVICE))
+                loss.backward()
+                optimizer.step()
+                launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
+            launchlog.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
+            scheduler.step()
+    logger.info("Finished Training!")

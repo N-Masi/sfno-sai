@@ -8,6 +8,7 @@ import modulus
 from ai2modulus.models.sfno.sfnonet import SphericalFourierNeuralOperatorNet
 
 ACE_NUM_EPOCHS = 30
+SINGLE_SIM_EPOCHS = 3
 ACE_BATCH_SIZE = 4
 
 def get_ace_sto_sfno(img_shape=(721, 1440), in_chans=2, out_chans=2, scale_factor=1, dropout=0.1, device="cuda") -> torch.nn.Module:
@@ -48,6 +49,9 @@ def get_ace_lr_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int=ACE_N
     '''
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     return lr_scheduler
+
+def ace_data_normalizer():
+    pass
 
 class AceLoss(torch.nn.Module):
     def __init__(self):
