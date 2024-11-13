@@ -13,7 +13,8 @@ DEVICE="cuda"
 
 fs = s3fs.S3FileSystem(anon=True)
 s3_bucket = "ncar-cesm2-arise"
-s3_path_prefix = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+s3_path_chunk1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+s3_path_chunk2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 
 # tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, forcing-only?)
 # input only (forcings):
@@ -85,7 +86,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     # append data (with dim=1) for each variable to X & Y
     data_to_norm = {}
     for var_path, var_name, vert_levels, forcing_only in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
+        s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk1}{sim_num}{s3_path_chunk2}{sim_num}{var_path}"
         # open s3 file
         with fs.open(s3_file_url) as varfile:
             with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
@@ -119,7 +120,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
 
     # train for this data multiple times (epochs), logging to w&b
     for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
-        epoch = single_sim_epoch*(i+1)
+        epoch = single_sim_epoch+(i*SINGLE_SIM_EPOCHS)
         with LaunchLogger("train", epoch=epoch, mini_batch_log_freq=1) as launchlog:
             for batch in data_loader:
                 torch.cuda.empty_cache()
@@ -135,7 +136,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
 
     # save checkpoint of model to w&b
     checkpoint = {
-        'epoch': (i+1)*SINGLE_SIM_EPOCHS,
+        'epoch': (i+1)*SINGLE_SIM_EPOCHS-1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),

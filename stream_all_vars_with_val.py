@@ -13,7 +13,8 @@ DEVICE="cuda"
 
 fs = s3fs.S3FileSystem(anon=True)
 s3_bucket = "ncar-cesm2-arise"
-s3_path_prefix = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT.001/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+s3_path_chunk1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+s3_path_chunk2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 
 # tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, forcing-only?)
 # input only (forcings):
@@ -79,7 +80,7 @@ Y_val = torch.empty(0)
 data_to_norm = {}
 for sim_num in SIM_NUMS_VAL:
     for var_path, var_name, vert_levels, forcing_only in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
+        s3_file_url = f"s3://{s3_bucket}/{s3_chunk_1}{sim_num}{s3_chunk_2}{sim_num}{var_path}"
         # open s3 file
         with fs.open(s3_file_url) as varfile:
             with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
@@ -120,7 +121,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     # append data (with dim=1) for each variable to X & Y
     data_to_norm = {}
     for var_path, var_name, vert_levels, forcing_only in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_prefix}{sim_num}{var_path}"
+        s3_file_url = f"s3://{s3_bucket}/{s3_chunk_1}{sim_num}{s3_chunk_2}{sim_num}{var_path}"
         # open s3 file
         with fs.open(s3_file_url) as varfile:
             with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
