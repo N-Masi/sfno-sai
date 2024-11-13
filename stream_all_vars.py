@@ -4,6 +4,7 @@ import xarray as xr
 import s3fs
 from ace_helpers import *
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
+import pdb
 
 DEVICE="cuda"
 
@@ -24,7 +25,8 @@ s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, False) # meridonal wind
 s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, False) # surface pressure
 s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, False) # surface temperature of land or sea-ice (radiative)
 # TODO: do we need diagnostic (output-only) variables? Mostly seem to be radiation
-variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
+#variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
+variables = [s3_path_AODVISstdn, s3_path_T]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
@@ -44,7 +46,8 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
+#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
@@ -59,7 +62,7 @@ initialize_wandb(
     resume="never", # use this to separate runs?
 )
 LaunchLogger.initialize(use_wandb=True)
-logger.info("Starting Training!")
+logger.info("Starting up")
 
 SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006", "007", "008"]
 SIM_NUMS_VAL = ["009"]
@@ -68,6 +71,8 @@ SIM_NUMS_TEST = ["010"]
 # TODO
 # outer nested loops: for each simulation 001-008, for each epoch:
 for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
+
+    logger.info(f"Loading simulation {sim_num}")
 
     # instantiate X & Y as empty tensors
     # Y needs to be shifted one timestep ahead of X
@@ -85,11 +90,13 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
                     data_xarray = ds.isel(lev=vert_level_indices)[[var_name]]
                 else:
                     data_xarray = ds.isel()[[var_name]]
-                data = torch.from_numpy(data_xarray.to_array().values).reshape(4, -1, 192, 288)
+                num_time_steps = len(data_xarray.time)
+                data = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
                 X = torch.concat((X, data[:-1]), dim=1)
                 if not forcing_only:
                     Y = torch.concat((Y, data[1:]), dim=1)
-                    
+        logger.info(f"Done loading {var_name}")
+
     # TODO: normalize X & Y (Appendix H of ACE paper)
 
     # make dataloader out of (X, Y) with batch_size ACE_BATCH_SIZE=4
@@ -101,6 +108,9 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
         with LaunchLogger("train", epoch=single_sim_epoch*(i+1), mini_batch_log_freq=1) as launchlog:
             for batch in data_loader:
+                #pdb.set_trace()
+                torch.cuda.empty_cache()
+                optimizer.zero_grad()
                 pred = model(batch[0].to(DEVICE))
                 loss = loss_fn(pred, batch[1].to(DEVICE))
                 loss.backward()

@@ -15,8 +15,8 @@ s3_file_url = f"s3://{s3_bucket}/{s3_path}"
 with fs.open(s3_file_url) as infile:
     print("opening")
     with xr.open_dataset(infile, engine="h5netcdf") as ds:
-        temp_explorer = ds.isel(time=[0,1,2,3],lev=0)[['T']]
-        #pdb.set_trace()
+        temp_explorer = ds.isel(time=0)[['T']]
+        pdb.set_trace()
         bgen = xbatcher.BatchGenerator(temp_explorer, {'time': 2})
         for batch in bgen:
             pdb.set_trace()
