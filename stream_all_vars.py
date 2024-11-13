@@ -3,7 +3,10 @@ from torch.utils.data import TensorDataset, DataLoader
 import xarray as xr
 import s3fs
 from ace_helpers import *
+from climate_normalizier import ClimateNormalizer
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
+import wandb
+import os
 import pdb
 
 DEVICE="cuda"
@@ -25,8 +28,8 @@ s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, False) # meridonal wind
 s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, False) # surface pressure
 s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, False) # surface temperature of land or sea-ice (radiative)
 # TODO: do we need diagnostic (output-only) variables? Mostly seem to be radiation
-#variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
-variables = [s3_path_AODVISstdn, s3_path_T]
+variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
+#variables = [s3_path_AODVISstdn, s3_path_T]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
@@ -46,11 +49,12 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
-#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
+#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
+normalizer = ClimateNormalizer()
 
 # logging for w&b
 logger = PythonLogger("main")
@@ -68,7 +72,6 @@ SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006", "007", "008"]
 SIM_NUMS_VAL = ["009"]
 SIM_NUMS_TEST = ["010"]
 
-# TODO
 # outer nested loops: for each simulation 001-008, for each epoch:
 for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
 
@@ -92,23 +95,23 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
                     data_xarray = ds.isel()[[var_name]]
                 num_time_steps = len(data_xarray.time)
                 data = torch.from_numpy(data_xarray.to_array().values).reshape(num_time_steps, -1, 192, 288)
-                X = torch.concat((X, data[:-1]), dim=1)
+                normalizer.fit(data, var_name)
+                normed_data = normalizer.normalize(data, var_name, 'residual')
+                X = torch.concat((X, normed_data[:-1]), dim=1)
                 if not forcing_only:
-                    Y = torch.concat((Y, data[1:]), dim=1)
+                    Y = torch.concat((Y, normed_data[1:]), dim=1)
         logger.info(f"Done loading {var_name}")
-
-    # TODO: normalize X & Y (Appendix H of ACE paper)
 
     # make dataloader out of (X, Y) with batch_size ACE_BATCH_SIZE=4
     # rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
     tds = TensorDataset(X, Y)
     data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True) # TODO: shuffle?
 
-     # train for this data multiple times (epochs), logging to w&b
+    # train for this data multiple times (epochs), logging to w&b
     for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
-        with LaunchLogger("train", epoch=single_sim_epoch*(i+1), mini_batch_log_freq=1) as launchlog:
+        epoch = single_sim_epoch*(i+1)
+        with LaunchLogger("train", epoch=epoch, mini_batch_log_freq=1) as launchlog:
             for batch in data_loader:
-                #pdb.set_trace()
                 torch.cuda.empty_cache()
                 optimizer.zero_grad()
                 pred = model(batch[0].to(DEVICE))
@@ -118,4 +121,25 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
                 launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
             launchlog.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
             scheduler.step()
-    logger.info("Finished Training!")
+        logger.info(f"Epoch {epoch} done")
+
+    # save checkpoint of model to w&b
+    checkpoint = {
+        'epoch': (i+1)*SINGLE_SIM_EPOCHS,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+    }
+    tmp_path = f"temp_checkpoint_sim_{sim_num}.pt"
+    torch.save(checkpoint, tmp_path)
+    artifact = wandb.Artifact(
+        name=f"model-checkpoint-sim-{sim_num}",
+        type="model",
+        description=f"Model checkpoint after training on sim {sim_num}"
+    )
+    artifact.add_file(tmp_path)
+    wandb.log_artifact(artifact)
+    os.remove(tmp_path) # Clean up temporary file
+    logger.info(f"Model checkpoint after training on sim {sim_num} saved to w&b")
+
+logger.info("Finished Training!")

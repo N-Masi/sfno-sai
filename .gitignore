@@ -9,3 +9,5 @@ modulus.venv/
 modulus.venv.3.10/
 __pycache__/
 processed_data/
+arise_processed_data/
+.netrc
