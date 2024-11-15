@@ -29,7 +29,7 @@ s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, False) # meridonal wind
 s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, False) # surface pressure
 s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, False) # surface temperature of land or sea-ice (radiative)
 # TODO: do we need diagnostic (output-only) variables? Mostly seem to be radiation
-variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
+variables = [s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
 #variables = [s3_path_AODVISstdn, s3_path_T]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
@@ -50,8 +50,7 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=52, out_chans=50, scale_factor=1, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()

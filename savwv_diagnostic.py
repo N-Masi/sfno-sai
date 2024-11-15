@@ -9,6 +9,8 @@ import wandb
 import os
 import pdb
 
+torch.manual_seed(2952)
+
 DEVICE="cuda"
 
 fs = s3fs.S3FileSystem(anon=True)
@@ -16,21 +18,25 @@ s3_bucket = "ncar-cesm2-arise"
 s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 
-# tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, forcing-only?)
+# tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, variable mode)
 # input only (forcings):
-s3_path_AODVISstdn = (".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, True) # this is the signal of the aerosol injections by controller
-s3_path_SST = (".cam.h0.SST.203501-206912.nc", "SST", False, True) # sea surface/skin temp (different from TS)
-s3_path_SOLIN = (".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, True) # downward shortwave radiative flux at TOA
+s3_path_AODVISstdn = (".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, "forcing") # this is the signal of the aerosol injections by controller
+s3_path_SST = (".cam.h0.SST.203501-206912.nc", "SST", False, "forcing") # sea surface/skin temp (different from TS)
+s3_path_SOLIN = (".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, "forcing") # downward shortwave radiative flux at TOA
 # input & output:
-s3_path_T = (".cam.h0.T.203501-206912.nc", "T", True, False) # temperature
-s3_path_Q = (".cam.h0.Q.203501-206912.nc", "Q", True, False) # specific humidity
-s3_path_U = (".cam.h0.U.203501-206912.nc", "U", True, False) # zonal wind
-s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, False) # meridonal wind
-s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, False) # surface pressure
-s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, False) # surface temperature of land or sea-ice (radiative)
-# TODO: do we need diagnostic (output-only) variables? Mostly seem to be radiation
-variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS]
-#variables = [s3_path_AODVISstdn, s3_path_T]
+s3_path_T = (".cam.h0.T.203501-206912.nc", "T", True, "prognostic") # temperature
+s3_path_Q = (".cam.h0.Q.203501-206912.nc", "Q", True, "prognostic") # specific humidity
+s3_path_U = (".cam.h0.U.203501-206912.nc", "U", True, "prognostic") # zonal wind
+s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, "prognostic") # meridonal wind
+s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, "prognostic") # surface pressure
+s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, "prognostic") # surface temperature of land or sea-ice (radiative)
+# output only:
+s3_path_SHFLX = (".cam.h0.SHFLX.203501-206912.nc", "SHFLX", False, "diagnostic") # surface sensible heat flux
+s3_path_LHFLX = (".cam.h0.LHFLX.203501-206912.nc", "LHFLX", False, "diagnostic") # latent sensible heat flux
+s3_path_PRECT = (".cam.h0.PRECT.203501-206912.nc", "PRECT", False, "diagnostic") # precipitation?
+# TODO: radiative flux
+# collate list of all variables
+variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS, s3_path_SHFLX, s3_path_LHFLX, s3_path_PRECT]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
@@ -51,7 +57,7 @@ Index to corresponding pressure (hPa):
 '''
 
 #model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=53, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
@@ -79,7 +85,7 @@ X_val = torch.empty(0)
 Y_val = torch.empty(0)
 data_to_norm = {}
 for sim_num in SIM_NUMS_VAL:
-    for var_path, var_name, vert_levels, forcing_only in variables:
+    for var_path, var_name, vert_levels, variable_mode in variables:
         s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
         # open s3 file
         with fs.open(s3_file_url) as varfile:
@@ -94,10 +100,11 @@ for sim_num in SIM_NUMS_VAL:
         logger.info(f"Done loading in {var_name}")
     normalizer.fit_multiple(data_to_norm)
     logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, forcing_only in variables:
+    for var_path, var_name, vert_levels, variable_mode in variables:
         normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        X_val = torch.concat((X_val, normed_data[:-1]), dim=1)
-        if not forcing_only:
+        if variable_mode != "diagnostic":
+            X_val = torch.concat((X_val, normed_data[:-1]), dim=1)
+        if variable_mode != "forcing"::
             Y_val = torch.concat((Y_val, normed_data[1:]), dim=1)
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")
@@ -120,7 +127,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
 
     # append data (with dim=1) for each variable to X & Y
     data_to_norm = {}
-    for var_path, var_name, vert_levels, forcing_only in variables:
+    for var_path, var_name, vert_levels, variable_mode in variables:
         s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
         # open s3 file
         with fs.open(s3_file_url) as varfile:
@@ -135,10 +142,11 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
         logger.info(f"Done loading in {var_name}")
     normalizer.fit_multiple(data_to_norm)
     logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, forcing_only in variables:
+    for var_path, var_name, vert_levels, variable_mode in variables:
         normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        X = torch.concat((X, normed_data[:-1]), dim=1)
-        if not forcing_only:
+        if variable_mode != "diagnostic":
+            X = torch.concat((X, normed_data[:-1]), dim=1)
+        if variable_mode != "forcing"::
             Y = torch.concat((Y, normed_data[1:]), dim=1)
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")

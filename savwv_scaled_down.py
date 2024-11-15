@@ -50,8 +50,7 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, device=DEVICE)
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=50, scale_factor=16, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
