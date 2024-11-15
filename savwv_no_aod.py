@@ -8,6 +8,10 @@ from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 import wandb
 import os
 import pdb
+import random
+
+random.seed(2952)
+torch.manual_seed(2952)
 
 DEVICE="cuda"
 
@@ -67,6 +71,7 @@ initialize_wandb(
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
+logger.info("RUNNING: savwv_no_aod.py")
 
 SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006"]
 SIM_NUMS_VAL = ["007"]

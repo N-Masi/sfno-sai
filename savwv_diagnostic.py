@@ -8,7 +8,9 @@ from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 import wandb
 import os
 import pdb
+import random
 
+random.seed(2952)
 torch.manual_seed(2952)
 
 DEVICE="cuda"
@@ -74,6 +76,7 @@ initialize_wandb(
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
+logger.info("RUNNING: savwv_diagnostic.py")
 
 SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006"]
 SIM_NUMS_VAL = ["007"]
@@ -104,7 +107,7 @@ for sim_num in SIM_NUMS_VAL:
         normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
         if variable_mode != "diagnostic":
             X_val = torch.concat((X_val, normed_data[:-1]), dim=1)
-        if variable_mode != "forcing"::
+        if variable_mode != "forcing":
             Y_val = torch.concat((Y_val, normed_data[1:]), dim=1)
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")
@@ -146,7 +149,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
         normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
         if variable_mode != "diagnostic":
             X = torch.concat((X, normed_data[:-1]), dim=1)
-        if variable_mode != "forcing"::
+        if variable_mode != "forcing":
             Y = torch.concat((Y, normed_data[1:]), dim=1)
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")
