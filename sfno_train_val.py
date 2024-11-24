@@ -9,36 +9,85 @@ import wandb
 import os
 import pdb
 import random
+import numpy as np
+import argparse
 
-random.seed(2952)
-torch.manual_seed(2952)
+parser = argparse.ArgumentParser()
+parser.add_argument("run_name", type=str, help="name of the run/script as it will appear in w&b")
+parser.add_argument("-s", "--seed", type=int, default=2952, help="randomizing seed")
+parser.add_argument("-c", "--device", default="cuda", choices=["cuda", "cpu"], help="device to run on")
+parser.add_argument("-D", "--dataset", default="arise", choices=["arise"], help="dataset to use")
+parser.add_argument("-f", "--forcing_vars", type=str, nargs="*", default=["AODVISstdn", "SST", "SOLIN"], help="forcing (input-only) variables to use")
+parser.add_argument("-p", "--prognostic_vars", type=str, nargs="*", default=["T", "Q", "U", "V", "PS", "TS"], help="prognostic (input & output) variables to use")
+parser.add_argument("-d", "--diagnostic_vars", type=str, nargs="*", default=["SHFLX", "LHFLX", "PRECT"], help="diagnostic (output-only) variables to use")
+parser.add_argument("-i", "--in_chans", type=int, default=53, help="# of in channels for the SFNO = #(forcing channels) + #(prognostic channels); 1 channel per variable per vertical level")
+parser.add_argument("-o", "--out_chans", type=int, default=53, help="# of out channels for the SFNO = #(diagnostic channels) + #(prognostic channels); 1 channel per variable per vertical level")
+parser.add_argument("-m", "--scale_factor", type=int, default=1, help="scale_factor in SFNO model, higher scale_factor multiplicatively decreases the threshold of frequency modes kept after spherical harmonic transform")
+parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001", "006", "002", "007", "005", "010"], help="ensemble members to use for training on")
+parser.add_argument("-T", "--test_members", type=str, nargs="*", default=["004"], help="ensemble members to use for testing")
+parser.add_argument("-v", "--val_members", type=str, nargs="+", default=["003"], help="ensemble members to use for validation")
+parser.add_argument("-e", "--member_epochs", type=int, default=3, help="number of times each ensemble member is trained on")
+args = parser.parse_args()
 
-DEVICE="cuda"
+random.seed(args.seed)
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+DEVICE=args.device
 
+# logging for w&b
+logger = PythonLogger("main")
+initialize_wandb(
+    project="SFNO_test",
+    entity="nickmasi",
+    name=args.run_name,
+    mode="online",
+    resume="never", # use this to separate runs?
+)
+LaunchLogger.initialize(use_wandb=True)
+logger.info("Starting up")
+logger.info(f"RUNNING: {args.run_name}")
+
+# connection to s3 for streaming data
 fs = s3fs.S3FileSystem(anon=True)
-s3_bucket = "ncar-cesm2-arise"
-s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
-s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+if args.dataset == "arise":
+    s3_bucket = "ncar-cesm2-arise"
+    s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+    s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+    logger.info("Using ARISE-SAI-1.5 dataset")
 
+variables = []
 # tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, variable mode)
 # input only (forcings):
-s3_path_AODVISstdn = (".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, "forcing") # this is the signal of the aerosol injections by controller
-s3_path_SST = (".cam.h0.SST.203501-206912.nc", "SST", False, "forcing") # sea surface/skin temp (different from TS)
-s3_path_SOLIN = (".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, "forcing") # downward shortwave radiative flux at TOA
+if "AODVISstdn" in args.forcing_vars:
+    variables.append((".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, "forcing")) # this is the signal of the aerosol injections by controller
+if "SST" in args.forcing_vars:
+    variables.append((".cam.h0.SST.203501-206912.nc", "SST", False, "forcing")) # sea surface/skin temp (different from TS)
+if "SOLIN"  in args.forcing_vars:
+    variables.append((".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, "forcing")) # downward shortwave radiative flux at TOA
+logger.info(f"Forcing variables being used: {args.forcing_vars}")
 # input & output:
-s3_path_T = (".cam.h0.T.203501-206912.nc", "T", True, "prognostic") # temperature
-s3_path_Q = (".cam.h0.Q.203501-206912.nc", "Q", True, "prognostic") # specific humidity
-s3_path_U = (".cam.h0.U.203501-206912.nc", "U", True, "prognostic") # zonal wind
-s3_path_V = (".cam.h0.V.203501-206912.nc", "V", True, "prognostic") # meridonal wind
-s3_path_PS = (".cam.h0.PS.203501-206912.nc", "PS", False, "prognostic") # surface pressure
-s3_path_TS = (".cam.h0.TS.203501-206912.nc", "TS", False, "prognostic") # surface temperature of land or sea-ice (radiative)
+if "T" in args.prognostic_vars:
+    variables.append((".cam.h0.T.203501-206912.nc", "T", True, "prognostic")) # temperature
+if "Q" in args.prognostic_vars:
+    variables.append((".cam.h0.Q.203501-206912.nc", "Q", True, "prognostic")) # specific humidity
+if "U" in args.prognostic_vars:
+    variables.append((".cam.h0.U.203501-206912.nc", "U", True, "prognostic")) # zonal wind
+if "V" in args.prognostic_vars:
+    variables.append((".cam.h0.V.203501-206912.nc", "V", True, "prognostic")) # meridonal wind
+if "PS" in args.prognostic_vars:
+    variables.append((".cam.h0.PS.203501-206912.nc", "PS", False, "prognostic")) # surface pressure
+if "TS" in args.prognostic_vars:
+    variables.append((".cam.h0.TS.203501-206912.nc", "TS", False, "prognostic")) # surface temperature of land or sea-ice (radiative)
+logger.info(f"Prognostic variables being used: {args.prognostic_vars}")
 # output only:
-s3_path_SHFLX = (".cam.h0.SHFLX.203501-206912.nc", "SHFLX", False, "diagnostic") # surface sensible heat flux
-s3_path_LHFLX = (".cam.h0.LHFLX.203501-206912.nc", "LHFLX", False, "diagnostic") # latent sensible heat flux
-s3_path_PRECT = (".cam.h0.PRECT.203501-206912.nc", "PRECT", False, "diagnostic") # precipitation?
+if "SHFLX" in args.diagnostic_vars:
+    variables.append((".cam.h0.SHFLX.203501-206912.nc", "SHFLX", False, "diagnostic")) # surface sensible heat flux
+if "LHFLX" in args.diagnostic_vars:
+    variables.append((".cam.h0.LHFLX.203501-206912.nc", "LHFLX", False, "diagnostic")) # surfact latent  heat flux
+if "PRECT" in args.diagnostic_vars:
+    variables.append((".cam.h0.PRECT.203501-206912.nc", "PRECT", False, "diagnostic")) # precipitation?
+logger.info(f"Diagnostic variables being used: {args.diagnostic_vars}")
 # TODO: radiative flux
-# collate list of all variables
-variables = [s3_path_AODVISstdn,s3_path_SST, s3_path_SOLIN, s3_path_T, s3_path_Q, s3_path_U, s3_path_V, s3_path_PS, s3_path_TS, s3_path_SHFLX, s3_path_LHFLX, s3_path_PRECT]
 
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
@@ -58,29 +107,20 @@ Index to corresponding pressure (hPa):
     69: 992.556095123291
 '''
 
-#model = get_ace_sto_sfno(img_shape=(192,288), in_chans=13, out_chans=12, device=DEVICE)
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=53, out_chans=53, device=DEVICE)
+# initiate model
+logger.info(f"SFNO model hyperparams: in_chans={args.in_chans}, out_chans={args.out_chans}, scale_factor={args.scale_factor}")
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.in_chans, out_chans=args.out_chans, scale_factor=args.scale_factor, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = AceLoss()
 normalizer = ClimateNormalizer()
 
-# logging for w&b
-logger = PythonLogger("main")
-initialize_wandb(
-    project="SFNO_test",
-    entity="nickmasi",
-    name="Train with stream_all_vars",
-    mode="online",
-    resume="never", # use this to separate runs?
-)
-LaunchLogger.initialize(use_wandb=True)
-logger.info("Starting up")
-logger.info("RUNNING: savwv_diagnostic.py")
-
-SIM_NUMS_TRAIN = ["001", "002", "003", "004", "005", "006"]
-SIM_NUMS_VAL = ["007"]
-SIM_NUMS_TEST = ["010"]
+SIM_NUMS_TRAIN = args.train_members
+SIM_NUMS_VAL = args.val_members
+SIM_NUMS_TEST = args.test_members
+logger.info(f"Training on simulations: {SIM_NUMS_TRAIN}")
+logger.info(f"Validating on simulations: {SIM_NUMS_VAL}")
+logger.info(f"Number of times each ensemble member is trained on: {args.member_epochs}. Total number of epochs equals {len(SIM_NUMS_TRAIN)}*{args.member_epochs}={len(SIM_NUMS_TRAIN)*args.member_epochs}.")
 
 # create validation data
 logger.info(f"Loading validation data")
@@ -164,8 +204,8 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     Y = torch.empty(0)
 
     # train for this data multiple times (epochs), logging to w&b
-    for single_sim_epoch in range(SINGLE_SIM_EPOCHS): #
-        epoch = single_sim_epoch+(i*SINGLE_SIM_EPOCHS)
+    for single_sim_epoch in range(args.member_epochs):
+        epoch = single_sim_epoch+(i*args.member_epochs)
         with LaunchLogger("train", epoch=epoch, mini_batch_log_freq=1) as launchlog:
             model.train()
             for batch in data_loader:
@@ -192,9 +232,9 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             logger.info(f"Validation loss: {avg_val_loss}")
             launchlog.log_epoch({"Validation Loss": avg_val_loss})
 
-    # save checkpoint of model [after all #(single_sim_epoch) epochs on one simulation] to w&b
+    # save checkpoint of model to w&b after all #(single_sim_epoch) epochs on one simulation
     checkpoint = {
-        'epoch': (i+1)*SINGLE_SIM_EPOCHS-1,
+        'epoch': (i+1)*args.member_epochs-1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
@@ -204,7 +244,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     artifact = wandb.Artifact(
         name=f"model-checkpoint-sim-{sim_num}",
         type="model",
-        description=f"Model checkpoint after training on sim {sim_num}"
+        description=f"Model checkpoint after training on sim {sim_num} from run {args.run_name}"
     )
     artifact.add_file(tmp_path)
     wandb.log_artifact(artifact)
