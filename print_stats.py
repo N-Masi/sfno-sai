@@ -2,7 +2,7 @@ import torch
 import logging
 from pathlib import Path
 from typing import Dict, Any
-from climate_normalizier import ClimateNormalizer
+from climate_normalizer import ClimateNormalizer
 
 def setup_logging(log_file: Path) -> logging.Logger:
     """

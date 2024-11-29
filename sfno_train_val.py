@@ -3,7 +3,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import xarray as xr
 import s3fs
 from ace_helpers import *
-from climate_normalizier import ClimateNormalizer
+from climate_normalizer import ClimateNormalizer
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 import wandb
 import os
@@ -27,6 +27,7 @@ parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001"
 parser.add_argument("-T", "--test_members", type=str, nargs="*", default=["004"], help="ensemble members to use for testing")
 parser.add_argument("-v", "--val_members", type=str, nargs="+", default=["003"], help="ensemble members to use for validation")
 parser.add_argument("-e", "--member_epochs", type=int, default=3, help="number of times each ensemble member is trained on")
+parser.add_argument("-q", "--checkpoint_freq", type=int, default=1, help="after how many ensembles should a model checkpoint be saved on w&b")
 args = parser.parse_args()
 
 random.seed(args.seed)
@@ -45,6 +46,7 @@ initialize_wandb(
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
+logger.info("Task: next-timestep climate prediction")
 logger.info(f"RUNNING: {args.run_name}")
 
 # connection to s3 for streaming data
@@ -229,22 +231,23 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             launchlog.log_epoch({"Validation Loss": avg_val_loss})
 
     # save checkpoint of model to w&b after all #(single_sim_epoch) epochs on one simulation
-    checkpoint = {
-        'epoch': (i+1)*args.member_epochs-1,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-    }
-    tmp_path = f"temp_checkpoint_sim_{sim_num}.pt"
-    torch.save(checkpoint, tmp_path)
-    artifact = wandb.Artifact(
-        name=f"model-checkpoint-sim-{sim_num}",
-        type="model",
-        description=f"Model checkpoint after training on sim {sim_num} from run {args.run_name}"
-    )
-    artifact.add_file(tmp_path)
-    wandb.log_artifact(artifact)
-    os.remove(tmp_path) # Clean up temporary file
-    logger.info(f"Model checkpoint after training on sim {sim_num} saved to w&b")
+    if (i+1)%args.checkpoint_freq == 0:
+        checkpoint = {
+            'epoch': (i+1)*args.member_epochs-1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+        }
+        tmp_path = f"temp_checkpoint_sim_{sim_num}.pt"
+        torch.save(checkpoint, tmp_path)
+        artifact = wandb.Artifact(
+            name=f"model-checkpoint-sim-{sim_num}",
+            type="model",
+            description=f"Model checkpoint after training on sim {sim_num} from run {args.run_name}"
+        )
+        artifact.add_file(tmp_path)
+        wandb.log_artifact(artifact)
+        os.remove(tmp_path) # Clean up temporary file
+        logger.info(f"Model checkpoint after training on sim {sim_num} (after epoch {(i+1)*args.member_epochs-1}) saved to w&b")
 
 logger.info("Finished Training!")
