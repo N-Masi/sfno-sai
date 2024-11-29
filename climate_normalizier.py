@@ -27,7 +27,7 @@ class ClimateNormalizer:
         """Compute normalization statistics for a variable.
         
         Args:
-            x (torch.Tensor): Input tensor of shape (time, levels, lat, lon) or (time, lat, lon)
+            x (torch.Tensor): Input tensor of shape (time, levels, lat, lon)
             variable_name (str): Name of variable for storing statistics
             
         The function computes:
@@ -35,11 +35,9 @@ class ClimateNormalizer:
         2. Residual scaling based on temporal differences
         """
         # Validate input
-        assert len(x.shape) >= 3, "Input must have at least 3 dimensions (time, lat, lon)"
-        time_steps = x.shape[0]
+        assert len(x.shape) == 4, "Input must have 4 dimensions (time, levels, lat, lon)"
 
         if len(x.shape) == 4:  # 3D variable with levels
-            levels = x.shape[1]
             mu = torch.mean(x, dim=(0, 2, 3), keepdim=True)  # mean across time, lat, lon for each level
             sigma = torch.std(x, dim=(0, 2, 3), keepdim=True)  # std across time, lat, lon for each level
             
@@ -51,19 +49,6 @@ class ClimateNormalizer:
 
             # Compute standard deviation of differences per level
             sigma_ff_diff = torch.std(x_ff_diff, dim=(0, 2, 3), keepdim=True)
-        
-        else:  # 2D variable without levels
-            mu = torch.mean(x, dim=(0, 1, 2), keepdim=True)  # mean across time, lat, lon
-            sigma = torch.std(x, dim=(0, 1, 2), keepdim=True)  # std across time, lat, lon
-            
-            # Apply full-field normalization
-            x_ff = (x - mu) / sigma
-
-            # Compute forward differences (a(t+1) - a(t))
-            x_ff_diff = x_ff[1:] - x_ff[:-1]
-
-            # Compute standard deviation of differences
-            sigma_ff_diff = torch.std(x_ff_diff, dim=(0, 1, 2), keepdim=True)
         
         # Store statistics
         self.stats[variable_name] = {
@@ -148,7 +133,7 @@ if __name__ == "__main__":
     normalizer = ClimateNormalizer()
 
     # For 2D variable (e.g., surface pressure)
-    ps = torch.randn(420, 192, 288)  # (time, lat, lon)
+    ps = torch.randn(420, 1, 192, 288)  # (time, levels, lat, lon)
     normalizer.fit(ps, 'PS')
 
     # For 3D variable (e.g., temperature with levels)
