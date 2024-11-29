@@ -1,1 +1,1 @@
-Most up to date file to run is `python stream_all_vars_with_val.py`
+Most up to date file to run is `python sfno_train_val.py <job_name>`

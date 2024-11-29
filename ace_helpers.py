@@ -15,7 +15,7 @@ def get_ace_sto_sfno(img_shape=(721, 1440), in_chans=2, out_chans=2, scale_facto
     '''
     Returns the SFNO as used in the linked paper (ACE, Watt-Meyer et al. 2023)
     Non-passable hyperparams are those set in Table 3 of (ACE, Watt-Meyer et al. 2023)
-    With dropout=0.1, ACE-STO baseline is implemented
+    With dropout=0.1, ACE-STO baseline is implemented; drop_rate in SFNO architecture applies only 
     Defaults refer to the ai2modulus SFNO defaults at:
         https://github.com/ai2cm/modulus/blob/22df4a9427f5f12ff6ac891083220e7f2f54d229/ai2modulus/models/sfno/sfnonet.py
     '''
@@ -29,7 +29,8 @@ def get_ace_sto_sfno(img_shape=(721, 1440), in_chans=2, out_chans=2, scale_facto
         scale_factor=scale_factor, # ACE uses 1, ai2modulus default is 16; lower s_f means higher frequency threshold, so the model can attend to more (& higher) frequencies
         embed_dim=256,
         num_layers=8,
-        drop_rate=dropout, # Spherical DYffusion paper uses this for ACE-STO (one SFNO w/ dropout) as benchmark, could be set lower/zero
+        drop_rate=dropout, # Spherical DYffusion paper uses this for ACE-STO (one SFNO w/ dropout) as benchmark, could be set lower/zero. Applies to SFNO encoder + Fourier layer MLPs
+        drop_path_rate=0, # When nonzero, this turns on the DropPaths
         spectral_layers=3
     ).to(device)
     averaged_model = torch.optim.swa_utils.AveragedModel(
