@@ -25,8 +25,10 @@ parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001"
 parser.add_argument("-T", "--test_members", type=str, nargs="*", default=["004"], help="ensemble members to use for testing")
 parser.add_argument("-v", "--val_members", type=str, nargs="+", default=["003"], help="ensemble members to use for validation")
 parser.add_argument("-e", "--member_epochs", type=int, default=3, help="number of times each ensemble member is trained on")
-parser.add_argument("-a", "--same_masks_across_channels", type=bool, default=True, help="whether to mask the same patches of gridpoints on all channels (default True)")
 parser.add_argument("-q", "--checkpoint_freq", type=int, default=1, help="after how many ensembles should a model checkpoint be saved on w&b")
+parser.add_argument("-a", "--same_mask_across_chans", type=bool, default=True, help="whether to mask the same patches of gridpoints on all channels (default True)")
+parser.add_argument("-M", "--masking_ratio", type=float, default=0.5, help="percentage of gridpoints to mask")
+parser.add_argument("-P", "--patch_size", type=int, default=32, help="masked patches will have size PxP")
 args = parser.parse_args()
 
 random.seed(args.seed)
@@ -95,7 +97,7 @@ logger.info(f"SFNO model hyperparams: in_chans={args.channels}, out_chans={args.
 model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.channels, out_chans=args.channels, scale_factor=args.scale_factor, dropout=args.drop_rate, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
-loss_fn = MIMLoss() # TODO: implement
+loss_fn = MIMLoss()
 normalizer = ClimateNormalizer()
 
 SIM_NUMS_TRAIN = args.train_members
@@ -130,6 +132,9 @@ for sim_num in SIM_NUMS_VAL:
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")
     data_to_norm = {} # clear some memory
+val_tds = TensorDataset(X_val)
+val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE)
+X_val = torch.empty(0)
 logger.info("Validation data saved and preprocessed")
 
 # outer nested loops: for each simulation 001-008, for each epoch:
@@ -162,7 +167,10 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     data_to_norm = {} # clear some memory
     logger.info("Preprocessing complete")
 
-    # TODO: change training regime, patch images then calc loss on that
+    tds = TensorDataset(X)
+    data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
+    X = torch.empty(0)
+
     # train for this data multiple times (epochs), logging to w&b
     for single_sim_epoch in range(args.member_epochs):
         epoch = single_sim_epoch+(i*args.member_epochs)
@@ -171,8 +179,10 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             for batch in data_loader:
                 torch.cuda.empty_cache()
                 optimizer.zero_grad()
-                pred = model(batch[0].to(DEVICE, non_blocking=True))
-                loss = loss_fn(pred, batch[1].to(DEVICE, non_blocking=True))
+                mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed)
+                x = batch[0].to(DEVICE, non_blocking=True)
+                pred = model(x * (1 - mask))
+                loss = loss_fn(pred, x, mask)
                 loss.backward()
                 optimizer.step()
                 launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
@@ -185,8 +195,10 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             val_loss = 0.0
             with torch.no_grad():
                 for batch in val_loader:
-                    preds_val = model(batch[0].to(DEVICE, non_blocking=True))
-                    loss_val = loss_fn(preds_val, batch[1].to(DEVICE, non_blocking=True))
+                    mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed)
+                    x = batch[0].to(DEVICE, non_blocking=True)
+                    preds_val = model(x * (1 - mask))
+                    loss_val = loss_fn(preds_val, x, mask)
                     val_loss += loss_val.item()
             avg_val_loss = val_loss / len(val_loader)
             logger.info(f"Validation loss: {avg_val_loss}")
