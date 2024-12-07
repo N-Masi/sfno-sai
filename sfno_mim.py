@@ -20,7 +20,7 @@ parser.add_argument("-d", "--device", default="cuda", choices=["cuda", "cpu"], h
 parser.add_argument("-p", "--prognostic_vars", type=str, nargs="*", default=["T", "Q", "U", "V", "PS", "TS"], help="prognostic (input & output) variables to use")
 parser.add_argument("-c", "--channels", type=int, default=50, help="# of in channels in the 'image'; 1 channel per variable per vertical level")
 parser.add_argument("-m", "--scale_factor", type=int, default=1, help="scale_factor in SFNO model, higher scale_factor multiplicatively decreases the threshold of frequency modes kept after spherical harmonic transform")
-parser.add_argument("-r", "--drop_rate", type=float, default=0, help="dropout rate applied to SFNO encoder and the SFNO sFourier layer MLPs")
+parser.add_argument("-r", "--drop_rate", type=float, default=0, help="dropout rate applied to SFNO encoder and the SFNO's Fourier layer MLPs")
 parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001", "006", "002", "007", "005", "010"], help="ensemble members to use for training on")
 parser.add_argument("-T", "--test_members", type=str, nargs="*", default=["004"], help="ensemble members to use for testing")
 parser.add_argument("-v", "--val_members", type=str, nargs="+", default=["003"], help="ensemble members to use for validation")
@@ -47,7 +47,7 @@ initialize_wandb(
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
-logger.info("Task: masked image modelin")
+logger.info("Task: masked image modeling")
 logger.info(f"RUNNING: {args.run_name}")
 
 # connection to s3 for streaming data
@@ -93,7 +93,8 @@ Index to corresponding pressure (hPa):
 '''
 
 # initiate model
-logger.info(f"SFNO model hyperparams: in_chans={args.channels}, out_chans={args.channels}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
+logger.info(f"SFNO model hyperparameters: in_chans={args.channels}, out_chans={args.channels}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
+logger.info(f"Masking hyperparameters: masking_ratio={args.masking_ratio}, patch_size={args.patch_size}x{args.patch_size}, using the same mask on all channels of a var: {args.same_mask_across_chans}")
 model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.channels, out_chans=args.channels, scale_factor=args.scale_factor, dropout=args.drop_rate, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
@@ -179,7 +180,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             for batch in data_loader:
                 torch.cuda.empty_cache()
                 optimizer.zero_grad()
-                mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed)
+                mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed).to(DEVICE, non_blocking=True, dtype=torch.int)
                 x = batch[0].to(DEVICE, non_blocking=True)
                 pred = model(x * (1 - mask))
                 loss = loss_fn(pred, x, mask)
@@ -195,7 +196,7 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             val_loss = 0.0
             with torch.no_grad():
                 for batch in val_loader:
-                    mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed)
+                    mask = get_mim_mask(len(batch[0]), args.channels, args.same_mask_across_chans, args.masking_ratio, args.patch_size, args.seed).to(DEVICE, non_blocking=True, dtype=torch.int)
                     x = batch[0].to(DEVICE, non_blocking=True)
                     preds_val = model(x * (1 - mask))
                     loss_val = loss_fn(preds_val, x, mask)

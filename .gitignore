@@ -12,3 +12,6 @@ processed_data/
 arise_processed_data/
 .netrc
 *.png
+*.jpg
+*.jpeg
+*.gif

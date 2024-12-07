@@ -1,28 +1,44 @@
-# # Create a figure and axes
-# fig, axes = plt.subplots(1, 2, figsize=(14, 7))
-# # Create a Basemap instance for the North Pole and South Pole
-# m = Basemap(projection='npstere', boundinglat=10, lon_0=270, resolution='l', ax=axes[0])
-# m_south = Basemap(projection='spstere', boundinglat=-10, lon_0=90, resolution='l', ax=axes[1])
-# # Draw coastlines and countries on the North Pole map
-# m.drawcoastlines()
-# # m.drawcountries()  # Uncomment this if you want to draw country borders
-# # Plot your variable (example: scatter plot)
-# lats = np.linspace()
-# lons = [0, 45, 90, -45, -90]
-# values = [10, 20, 30, 40, 50]
-# # Convert the lat/lon to map projection coordinates
-# x, y = m(lons, lats)
-# m.scatter(x, y, s=values, c=values, cmap='viridis', marker='o')
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
+import pdb
 
-# # Draw coastlines on the South Pole map
-# m_south.drawcoastlines()
-# m_south.scatter(x, y, s=values, c=values, cmap='viridis', marker='o')
+# Create a figure and a single subplot with PlateCarree projection
+fig, axes = plt.subplots(1, 2, figsize=(14, 7), subplot_kw={'projection': ccrs.PlateCarree()})
 
-# # Set titles for the subplots
-# axes[0].set_title('North Pole')
-# axes[1].set_title('South Pole')
+# Data for plotting
+lats = np.linspace(-90, 90, 192)
+lons = np.linspace(-180, 180, 288)
+lon_grid, lat_grid = np.meshgrid(lons, lats)
+values_pred = np.random.randn(192, 288)
+values_sim = np.random.randn(192, 288)
 
-# # Show the plot
-# plt.tight_layout()
-# plt.show()
+for ax in axes:
+    ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.BORDERS, linestyle=':')
+    ax.add_feature(cfeature.LAND, edgecolor='black')
+    gridlines = ax.gridlines(draw_labels=True)
+    gridlines.top_labels = False
+    gridlines.right_labels = False
+gridlines.left_labels = False
 
+pcolormesh = axes[0].pcolormesh(
+    lon_grid, lat_grid, values_pred, cmap='coolwarm', shading='auto',
+    transform=ccrs.PlateCarree()
+)
+axes[0].set_title('Predicted Temperature After 35 Year Rollout', fontsize=14)
+
+pcolormesh = axes[1].pcolormesh(
+    lon_grid, lat_grid, values_sim, cmap='coolwarm', shading='auto',
+    transform=ccrs.PlateCarree()
+)
+axes[1].set_title('Ground-Truth Temperature After 35 Year Simulation', fontsize=14)
+
+# Add a colorbar
+cbar = fig.colorbar(pcolormesh, ax=axes, orientation='horizontal', fraction=0.05, pad=0.1)
+cbar.set_label('°C')
+
+# Show the plot
+plt.savefig("figures/nv.png")

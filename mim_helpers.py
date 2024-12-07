@@ -20,8 +20,8 @@ class MIMLoss(torch.nn.Module):
         """
         if mask.sum() == 0:
             return torch.Tensor([0])
-        l1 = L1Loss()
-        loss = l1(pred[mask], target[mask], reduction='mean')
+        l1 = L1Loss(reduction='mean')
+        loss = l1(pred*mask, target*mask)
         return loss
 
 def get_mim_mask(batch_size: int, chans: int, same_mask_across_chans: bool, masking_ratio: float, patch_size: int, seed: int, lat: int = 192, lon: int = 288) -> torch.Tensor:
