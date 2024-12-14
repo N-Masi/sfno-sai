@@ -17,8 +17,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("run_name", type=str, help="name of the run/script as it will appear in w&b")
 parser.add_argument("-s", "--seed", type=int, default=2952, help="randomizing seed")
 parser.add_argument("-d", "--device", default="cuda", choices=["cuda", "cpu"], help="device to run on")
-parser.add_argument("-p", "--prognostic_vars", type=str, nargs="*", default=["T", "Q", "U", "V", "PS", "TS"], help="prognostic (input & output) variables to use")
-parser.add_argument("-c", "--channels", type=int, default=50, help="# of in channels in the 'image'; 1 channel per variable per vertical level")
+parser.add_argument("-p", "--prognostic_vars", type=str, nargs="*", default=["AODVISstdn", "SOLIN", "T", "Q", "U", "V", "PS", "TS"], help="prognostic (input & output) variables to use")
+parser.add_argument("-c", "--channels", type=int, default=52, help="# of in channels in the 'image'; 1 channel per variable per vertical level")
 parser.add_argument("-m", "--scale_factor", type=int, default=1, help="scale_factor in SFNO model, higher scale_factor multiplicatively decreases the threshold of frequency modes kept after spherical harmonic transform")
 parser.add_argument("-r", "--drop_rate", type=float, default=0, help="dropout rate applied to SFNO encoder and the SFNO's Fourier layer MLPs")
 parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001", "006", "002", "007", "005", "010"], help="ensemble members to use for training on")
@@ -57,6 +57,8 @@ s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
 logger.info("Using ARISE-SAI-1.5 dataset")
 
+# want to include forcings as "prognostics" (in the sense that they're both input and predicted output, not in the semantic climate sense)
+# when doing MIM so that the model represents the climate state in the latent space and the encoder has the appropriate dimensionality
 variables = []
 # tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, variable mode)
 # input & output:

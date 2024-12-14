@@ -1,4 +1,5 @@
 wandb/
+artifacts/
 arise_processed/
 .cursor_server/
 .cursor-server/
@@ -15,3 +16,4 @@ arise_processed_data/
 *.jpg
 *.jpeg
 *.gif
+*.pt

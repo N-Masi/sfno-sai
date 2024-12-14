@@ -11,9 +11,11 @@ import pdb
 import random
 import numpy as np
 import argparse
+import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument("run_name", type=str, help="name of the run/script as it will appear in w&b")
+parser.add_argument("model_dir", type=str, help="directory to saved checkpoint (.pt) of trained model to use")
 parser.add_argument("-s", "--seed", type=int, default=2952, help="randomizing seed")
 parser.add_argument("-c", "--device", default="cuda", choices=["cuda", "cpu"], help="device to run on")
 parser.add_argument("-D", "--dataset", default="arise", choices=["arise"], help="dataset to use")
@@ -24,11 +26,7 @@ parser.add_argument("-i", "--in_chans", type=int, default=52, help="# of in chan
 parser.add_argument("-o", "--out_chans", type=int, default=53, help="# of out channels for the SFNO = #(diagnostic channels) + #(prognostic channels); 1 channel per variable per vertical level")
 parser.add_argument("-m", "--scale_factor", type=int, default=1, help="scale_factor in SFNO model, higher scale_factor multiplicatively decreases the threshold of frequency modes kept after spherical harmonic transform")
 parser.add_argument("-r", "--drop_rate", type=float, default=0, help="dropout rate applied to SFNO encoder and the SFNO sFourier layer MLPs")
-parser.add_argument("-t", "--train_members", type=str, nargs="+", default=["001", "006", "002", "007", "005", "010"], help="ensemble members to use for training on")
 parser.add_argument("-T", "--test_members", type=str, nargs="*", default=["004"], help="ensemble members to use for testing")
-parser.add_argument("-v", "--val_members", type=str, nargs="+", default=["003"], help="ensemble members to use for validation")
-parser.add_argument("-e", "--member_epochs", type=int, default=3, help="number of times each ensemble member is trained on")
-parser.add_argument("-q", "--checkpoint_freq", type=int, default=1, help="after how many ensembles should a model checkpoint be saved on w&b")
 args = parser.parse_args()
 
 random.seed(args.seed)
@@ -41,13 +39,13 @@ logger = PythonLogger("main")
 initialize_wandb(
     project="SFNO_test",
     entity="nickmasi",
-    name=args.run_name,
+    name='TEST:'+args.run_name,
     mode="online",
     resume="never", # use this to separate runs?
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
-logger.info("Task: next-timestep climate prediction")
+logger.info("Task: TEST --- full rollout of predictions w/o teacher forcing")
 logger.info(f"RUNNING: {args.run_name}")
 
 # connection to s3 for streaming data
@@ -113,24 +111,21 @@ Index to corresponding pressure (hPa):
 # initiate model
 logger.info(f"SFNO model hyperparams: in_chans={args.in_chans}, out_chans={args.out_chans}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
 model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.in_chans, out_chans=args.out_chans, scale_factor=args.scale_factor,  dropout=args.drop_rate, device=DEVICE)
-optimizer = get_ace_optimizer(model)
-scheduler = get_ace_lr_scheduler(optimizer)
+logger.info(f"Loading in trained model: {args.model_dir}")
+checkpoint = torch.load(args.model_dir, map_location=DEVICE)
+logger.info("Transferring state dict from saved checkpoint to model")
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+logger.info("Model loaded successfully")
 loss_fn = AceLoss()
 normalizer = ClimateNormalizer()
 
-SIM_NUMS_TRAIN = args.train_members
-SIM_NUMS_VAL = args.val_members
+# load data
 SIM_NUMS_TEST = args.test_members
-logger.info(f"Training on simulations: {SIM_NUMS_TRAIN}")
-logger.info(f"Validating on simulations: {SIM_NUMS_VAL}")
-logger.info(f"Number of times each ensemble member is trained on: {args.member_epochs}. Total number of epochs equals {len(SIM_NUMS_TRAIN)}*{args.member_epochs}={len(SIM_NUMS_TRAIN)*args.member_epochs}.")
-
-# create validation data
-logger.info(f"Loading validation data")
-X_val = torch.empty(0)
-Y_val = torch.empty(0)
+logger.info(f"Loading testing data from ensemble: {SIM_NUMS_TEST}")
+real_data = torch.empty(0)
 data_to_norm = {}
-for sim_num in SIM_NUMS_VAL:
+for sim_num in SIM_NUMS_TEST:
     for var_path, var_name, vert_levels, variable_mode in variables:
         s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
         # open s3 file
@@ -146,109 +141,39 @@ for sim_num in SIM_NUMS_VAL:
     logger.info("Done fitting normalizer")
     for var_path, var_name, vert_levels, variable_mode in variables:
         normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        if variable_mode != "diagnostic":
-            X_val = torch.concat((X_val, normed_data[:-1]), dim=1)
-        if variable_mode != "forcing":
-            Y_val = torch.concat((Y_val, normed_data[1:]), dim=1)
+        real_data = torch.concat((real_data, normed_data), dim=1)
         data_to_norm[var_name] = None # clear some memory
         logger.info(f"Done normalizing {var_name}")
     data_to_norm = {} # clear some memory
-val_tds = TensorDataset(X_val, Y_val)
-val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE)
-X_val = torch.empty(0)
-Y_val = torch.empty(0)
-logger.info("Validation data saved and preprocessed")
+real_data = real_data.to(DEVICE, non_blocking=True)
+logger.info("Testing data saved and preprocessed")
 
-# outer nested loops: for each simulation 001-008, for each epoch:
-for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
+# NOTE: this functionality depends on the variable groups being appended to the variables list in this order
+num_forcing_chans = 0
+num_prognostic_chans = 0
+num_diagnostic_chans = 0
+for var_path, var_name, vert_levels, variable_mode in variables:
+	num_chans = len(vert_level_indices) if vert_levels else 1
+	if variable_mode == 'forcing':
+		num_forcing_chans += num_chans
+	elif variable_mode == 'prognostic':
+		num_prognostic_chans += num_chans
+	elif variable_mode == 'diagnostic':
+		num_diagnostic_chans += num_chans
+real_forcings = real_data[:, :num_forcing_chans, :, :]
+real_outputs = real_data[:, num_forcing_chans:, :, :]
+real_data = torch.empty(0)
+logger.info("Finished separating data into variable modes")
 
-    logger.info(f"Loading simulation {sim_num}")
+# test with autoregressive rollout
+logger.info("Beginning rollout")
+curr_pred = real_outputs[0].reshape((1, -1, 192, 288))
+with LaunchLogger("test", mini_batch_log_freq=1) as launchlog:
+    with torch.no_grad():
+        for t in range(1, 420):
+            curr_pred = model(torch.concat((real_forcings[t-1].reshape((1, -1, 192, 288)), curr_pred[:, :num_prognostic_chans, :, :]), dim=1))
+            loss = loss_fn(curr_pred, real_outputs[t].reshape((1, -1, 192, 288)))
+            loss += loss.item()
+            launchlog.log_minibatch({"Test Loss": loss.detach().cpu().numpy()})
 
-    # instantiate X & Y as empty tensors
-    # Y needs to be shifted one timestep ahead of X
-    X = torch.empty(0)
-    Y = torch.empty(0)
-
-    # append data (with dim=1) for each variable to X & Y
-    data_to_norm = {}
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
-        # open s3 file
-        with fs.open(s3_file_url) as varfile:
-            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
-                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
-                if vert_levels:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].isel(lev=vert_level_indices).to_array().values).reshape(-1, len(vert_level_indices), 192, 288)
-                else:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].to_array().values).reshape(-1, 1, 192, 288)
-        logger.info(f"Done loading in {var_name}")
-    normalizer.fit_multiple(data_to_norm)
-    logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        if variable_mode != "diagnostic":
-            X = torch.concat((X, normed_data[:-1]), dim=1)
-        if variable_mode != "forcing":
-            Y = torch.concat((Y, normed_data[1:]), dim=1)
-        data_to_norm[var_name] = None # clear some memory
-        logger.info(f"Done normalizing {var_name}")
-    data_to_norm = {} # clear some memory
-    logger.info("Preprocessing complete")
-
-    # make dataloader out of (X, Y) with batch_size ACE_BATCH_SIZE=4
-    # rough estimates that X & Y will each be 5.3Gb, should be doable on OSCAR
-    tds = TensorDataset(X, Y)
-    data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
-    X = torch.empty(0)
-    Y = torch.empty(0)
-
-    # train for this data multiple times (epochs), logging to w&b
-    for single_sim_epoch in range(args.member_epochs):
-        epoch = single_sim_epoch+(i*args.member_epochs)
-        with LaunchLogger("train", epoch=epoch, mini_batch_log_freq=1) as launchlog:
-            model.train()
-            for batch in data_loader:
-                torch.cuda.empty_cache()
-                optimizer.zero_grad()
-                pred = model(batch[0].to(DEVICE, non_blocking=True))
-                loss = loss_fn(pred, batch[1].to(DEVICE, non_blocking=True))
-                loss.backward()
-                optimizer.step()
-                launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
-            launchlog.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
-            scheduler.step()
-            logger.info(f"Epoch {epoch} training done")
-
-            # validation for this epoch
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for batch in val_loader:
-                    preds_val = model(batch[0].to(DEVICE, non_blocking=True))
-                    loss_val = loss_fn(preds_val, batch[1].to(DEVICE, non_blocking=True))
-                    val_loss += loss_val.item()
-            avg_val_loss = val_loss / len(val_loader)
-            logger.info(f"Validation loss: {avg_val_loss}")
-            launchlog.log_epoch({"Validation Loss": avg_val_loss})
-
-    # save checkpoint of model to w&b after all #(single_sim_epoch) epochs on one simulation
-    if (i+1)%args.checkpoint_freq == 0:
-        checkpoint = {
-            'epoch': (i+1)*args.member_epochs-1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-        }
-        tmp_path = f"temp_checkpoint_sim_{sim_num}.pt"
-        torch.save(checkpoint, tmp_path)
-        artifact = wandb.Artifact(
-            name=f"model-checkpoint-sim-{sim_num}",
-            type="model",
-            description=f"Model checkpoint after training on sim {sim_num} from run {args.run_name}"
-        )
-        artifact.add_file(tmp_path)
-        wandb.log_artifact(artifact)
-        os.remove(tmp_path) # Clean up temporary file
-        logger.info(f"Model checkpoint after training on sim {sim_num} (after epoch {(i+1)*args.member_epochs-1}) saved to w&b")
-
-logger.info("Finished Training!")
+logger.info("Finished Testing!")
