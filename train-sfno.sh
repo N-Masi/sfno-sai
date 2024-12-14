@@ -22,7 +22,7 @@
 module load cuda cudnn torch
 
 # Run a script
-source ../modulus.venv/bin/activate
+source modulus.venv/bin/activate
 python ../sfno-sai/sfno_train_val.py "AceSto0.2 (no SST)" -r 0.2
 rm -rf ../.cache/wandb/artifacts/
 
