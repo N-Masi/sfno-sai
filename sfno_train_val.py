@@ -71,8 +71,8 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
     logger.info(f"Loading simulation {sim_num}")
     X = torch.load(DATA_FILEPATH_STEM+sim_num+".pt")
     logger.info("Data loaded!")
-    Y = X[1:]
-    X = X[:-1]
+    Y = X[1:, 2:] # prognostic + diagnostic
+    X = X[:-1, :52] # forcing + prognostic
     tds = TensorDataset(X, Y)
     data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
     X = torch.ones(0)
@@ -95,8 +95,6 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             launchlog.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
             scheduler.step()
             logger.info(f"Epoch {epoch} training done")
-            tds = torch.ones(0)
-            data_loader = torch.ones(0)
 
             # validation for this epoch
             model.eval()
@@ -104,8 +102,8 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             logger.info(f"Loading validation data from {val_sim}")
             X = torch.load(DATA_FILEPATH_STEM+val_sim+".pt")
             logger.info("Data loaded!")
-            Y = X[1:]
-            X = X[:-1]
+            Y = X[1:, 2:] # prognostic + diagnostic
+            X = X[:-1, :52] # forcing + prognostic
             val_tds = TensorDataset(X, Y)
             val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
             X = torch.ones(0)
