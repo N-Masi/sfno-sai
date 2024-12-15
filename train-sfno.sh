@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Request 10 hours of runtime:
+# Request runtime (HH:MM:SS):
 #SBATCH --time=07:00:00
 
 # Ask for the GPU partition and 1 GPU
