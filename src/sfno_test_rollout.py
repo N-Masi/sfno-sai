@@ -3,7 +3,6 @@ from torch.utils.data import TensorDataset, DataLoader
 import xarray as xr
 import s3fs
 from ace_helpers import *
-from climate_normalizer import ClimateNormalizer
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 import wandb
 import os
@@ -11,7 +10,6 @@ import pdb
 import random
 import numpy as np
 import argparse
-import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument("run_name", type=str, help="name of the run/script as it will appear in w&b")
@@ -48,14 +46,6 @@ logger.info("Starting up")
 logger.info("Task: TEST --- full rollout of predictions w/o teacher forcing")
 logger.info(f"RUNNING: {args.run_name}")
 
-# connection to s3 for streaming data
-fs = s3fs.S3FileSystem(anon=True)
-if args.dataset == "arise":
-    s3_bucket = "ncar-cesm2-arise"
-    s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
-    s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
-    logger.info("Using ARISE-SAI-1.5 dataset")
-
 variables = []
 # tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, variable mode)
 # input only (forcings):
@@ -90,6 +80,26 @@ if "PRECT" in args.diagnostic_vars:
 logger.info(f"Diagnostic variables being used: {args.diagnostic_vars}")
 # TODO: radiative flux
 
+# initiate model
+logger.info(f"SFNO model hyperparams: in_chans={args.in_chans}, out_chans={args.out_chans}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
+model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.in_chans, out_chans=args.out_chans, scale_factor=args.scale_factor,  dropout=args.drop_rate, device=DEVICE)
+logger.info(f"Loading in trained model: {args.model_dir}")
+checkpoint = torch.load(args.model_dir, map_location=DEVICE, weights_only=True)
+logger.info("Transferring state dict from saved checkpoint to model")
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+logger.info("Model loaded successfully")
+loss_fn = AceLoss()
+
+# load data
+SIM_NUMS_TEST = args.test_members
+logger.info(f"Loading testing data from first member of ensemble subset: {SIM_NUMS_TEST}")
+DATA_FILEPATH_STEM = "../sfno-sai/data/normed_data_55_chans_"
+real_data = torch.load(DATA_FILEPATH_STEM+SIM_NUMS_TEST[0]+".pt", map_location=DEVICE)
+if not "AODVISstdn" in args.forcing_vars:
+    real_data = real_data[:, 1:]
+logger.info("Data loaded!")
+
 vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
 ''' Indices into the 70 vertical levels of the lev dimension.
 Different vertical levels used for, among others, T & Q.
@@ -107,46 +117,6 @@ Index to corresponding pressure (hPa):
     62: 820.8583686500788
     69: 992.556095123291
 '''
-
-# initiate model
-logger.info(f"SFNO model hyperparams: in_chans={args.in_chans}, out_chans={args.out_chans}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
-model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.in_chans, out_chans=args.out_chans, scale_factor=args.scale_factor,  dropout=args.drop_rate, device=DEVICE)
-logger.info(f"Loading in trained model: {args.model_dir}")
-checkpoint = torch.load(args.model_dir, map_location=DEVICE)
-logger.info("Transferring state dict from saved checkpoint to model")
-model.load_state_dict(checkpoint['model_state_dict'])
-model.eval()
-logger.info("Model loaded successfully")
-loss_fn = AceLoss()
-normalizer = ClimateNormalizer()
-
-# load data
-SIM_NUMS_TEST = args.test_members
-logger.info(f"Loading testing data from ensemble: {SIM_NUMS_TEST}")
-real_data = torch.empty(0)
-data_to_norm = {}
-for sim_num in SIM_NUMS_TEST:
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
-        # open s3 file
-        with fs.open(s3_file_url) as varfile:
-            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
-                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
-                if vert_levels:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].isel(lev=vert_level_indices).to_array().values).reshape(-1, len(vert_level_indices), 192, 288)
-                else:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].to_array().values).reshape(-1, 1, 192, 288)
-        logger.info(f"Done loading in {var_name}")
-    normalizer.fit_multiple(data_to_norm)
-    logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        real_data = torch.concat((real_data, normed_data), dim=1)
-        data_to_norm[var_name] = None # clear some memory
-        logger.info(f"Done normalizing {var_name}")
-    data_to_norm = {} # clear some memory
-real_data = real_data.to(DEVICE, non_blocking=True)
-logger.info("Testing data saved and preprocessed")
 
 # NOTE: this functionality depends on the variable groups being appended to the variables list in this order
 num_forcing_chans = 0
@@ -167,13 +137,19 @@ logger.info("Finished separating data into variable modes")
 
 # test with autoregressive rollout
 logger.info("Beginning rollout")
-curr_pred = real_outputs[0].reshape((1, -1, 192, 288))
+curr_pred = real_outputs[0].reshape((1, -1, 192, 288)).to(DEVICE)
+full_rollout = torch.ones((420, 53, 192, 288)).to(DEVICE)
+full_rollout[0] = curr_pred
 with LaunchLogger("test", mini_batch_log_freq=1) as launchlog:
     with torch.no_grad():
         for t in range(1, 420):
             curr_pred = model(torch.concat((real_forcings[t-1].reshape((1, -1, 192, 288)), curr_pred[:, :num_prognostic_chans, :, :]), dim=1))
+            full_rollout[t] = curr_pred
             loss = loss_fn(curr_pred, real_outputs[t].reshape((1, -1, 192, 288)))
-            loss += loss.item()
-            launchlog.log_minibatch({"Test Loss": loss.detach().cpu().numpy()})
+            logger.info(f"Loss: {loss.detach().cpu().numpy()}")
+            launchlog.log_minibatch({"Loss": loss.detach().cpu().numpy()})
+print(f'Final loss: {loss}')
 
+#save_fp = args.model_dir.split("/")[1]
+#torch.save(full_rollout, f"rollout_of_{SIM_NUMS_TEST[0]}_w_{save_fp}.pt")
 logger.info("Finished Testing!")

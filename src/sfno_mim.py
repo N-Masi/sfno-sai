@@ -4,7 +4,6 @@ import xarray as xr
 import s3fs
 from ace_helpers import *
 from mim_helpers import *
-from climate_normalizer import ClimateNormalizer
 from modulus.launch.logging import LaunchLogger, PythonLogger, initialize_wandb
 import wandb
 import os
@@ -47,65 +46,23 @@ initialize_wandb(
 )
 LaunchLogger.initialize(use_wandb=True)
 logger.info("Starting up")
-logger.info("Task: masked image modeling")
+logger.info("Task: masked image modeling pretraining")
 logger.info(f"RUNNING: {args.run_name}")
 
-# connection to s3 for streaming data
-fs = s3fs.S3FileSystem(anon=True)
-s3_bucket = "ncar-cesm2-arise"
-s3_path_chunk_1 = "ARISE-SAI-1.5/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
-s3_path_chunk_2 = "/atm/proc/tseries/month_1/b.e21.BW.f09_g17.SSP245-TSMLT-GAUSS-DEFAULT."
+# data stuff from oscar /data dir
+# want to include forcings as "prognostics" (in the sense that they're both input and predicted output, not in the semantic climate sense) \
+#   when doing MIM so that the model represents the climate state in the latent space and the encoder has the appropriate dimensionality (52-d input)
 logger.info("Using ARISE-SAI-1.5 dataset")
-
-# want to include forcings as "prognostics" (in the sense that they're both input and predicted output, not in the semantic climate sense)
-# when doing MIM so that the model represents the climate state in the latent space and the encoder has the appropriate dimensionality
-variables = []
-# tuples of (path to monthly data for variable, variable name, whether different vertical levels are needed, variable mode)
-# input & output:
-if "AODVISstdn" in args.prognostic_vars:
-    variables.append((".cam.h0.AODVISstdn.203501-206912.nc", "AODVISstdn", False, "forcing")) # aerosol optical depth
-if "SOLIN"  in args.prognostic_vars:
-    variables.append((".cam.h0.SOLIN.203501-206912.nc", "SOLIN", False, "forcing")) # downward shortwave radiative flux at TOA
-if "T" in args.prognostic_vars:
-    variables.append((".cam.h0.T.203501-206912.nc", "T", True, "prognostic")) # temperature
-if "Q" in args.prognostic_vars:
-    variables.append((".cam.h0.Q.203501-206912.nc", "Q", True, "prognostic")) # specific humidity
-if "U" in args.prognostic_vars:
-    variables.append((".cam.h0.U.203501-206912.nc", "U", True, "prognostic")) # zonal wind
-if "V" in args.prognostic_vars:
-    variables.append((".cam.h0.V.203501-206912.nc", "V", True, "prognostic")) # meridonal wind
-if "PS" in args.prognostic_vars:
-    variables.append((".cam.h0.PS.203501-206912.nc", "PS", False, "prognostic")) # surface pressure
-if "TS" in args.prognostic_vars:
-    variables.append((".cam.h0.TS.203501-206912.nc", "TS", False, "prognostic")) # surface temperature of land or sea-ice (radiative)
-logger.info(f"Prognostic variables being used: {args.prognostic_vars}")
-
-vert_level_indices = [24, 36, 39, 41, 44, 46, 49, 52, 56, 59, 62, 69]
-''' Indices into the 70 vertical levels of the lev dimension.
-Different vertical levels used for, among others, T & Q.
-Index to corresponding pressure (hPa):
-    24: 0.5534699885174632
-    36: 10.70705009624362
-    39: 20.056750625371933
-    41: 29.7279991209507
-    44: 51.67749896645546
-    46: 73.75095784664154
-    49: 121.54724076390266
-    52: 197.9080867022276
-    56: 379.10090386867523
-    59: 609.7786948084831
-    62: 820.8583686500788
-    69: 992.556095123291
-'''
+logger.info('Prognostics: ["AODVISstdn", "SOLIN", "T", "Q", "U", "V", "PS", "TS"] (52 channels)')
+DATA_FILEPATH_STEM = "../sfno-sai/data/normed_data_55_chans_"
 
 # initiate model
-logger.info(f"SFNO model hyperparameters: in_chans={args.channels}, out_chans={args.channels}, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
+logger.info(f"SFNO model hyperparameters: in_chans={args.channels}=out_chans, scale_factor={args.scale_factor}, drop_rate={args.drop_rate}")
 logger.info(f"Masking hyperparameters: masking_ratio={args.masking_ratio}, patch_size={args.patch_size}x{args.patch_size}, using the same mask on all channels of a var: {args.same_mask_across_chans}")
 model = get_ace_sto_sfno(img_shape=(192,288), in_chans=args.channels, out_chans=args.channels, scale_factor=args.scale_factor, dropout=args.drop_rate, device=DEVICE)
 optimizer = get_ace_optimizer(model)
 scheduler = get_ace_lr_scheduler(optimizer)
 loss_fn = MIMLoss()
-normalizer = ClimateNormalizer()
 
 SIM_NUMS_TRAIN = args.train_members
 SIM_NUMS_VAL = args.val_members
@@ -114,69 +71,17 @@ logger.info(f"Training on simulations: {SIM_NUMS_TRAIN}")
 logger.info(f"Validating on simulations: {SIM_NUMS_VAL}")
 logger.info(f"Number of times each ensemble member is trained on: {args.member_epochs}. Total number of epochs equals {len(SIM_NUMS_TRAIN)}*{args.member_epochs}={len(SIM_NUMS_TRAIN)*args.member_epochs}.")
 
-# create validation data
-logger.info(f"Loading validation data")
-X_val = torch.empty(0)
-data_to_norm = {}
-for sim_num in SIM_NUMS_VAL:
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
-        # open s3 file
-        with fs.open(s3_file_url) as varfile:
-            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
-                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
-                if vert_levels:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].isel(lev=vert_level_indices).to_array().values).reshape(-1, len(vert_level_indices), 192, 288)
-                else:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].to_array().values).reshape(-1, 1, 192, 288)
-        logger.info(f"Done loading in {var_name}")
-    normalizer.fit_multiple(data_to_norm)
-    logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        if variable_mode != "diagnostic":
-            X_val = torch.concat((X_val, normed_data), dim=1)
-        data_to_norm[var_name] = None # clear some memory
-        logger.info(f"Done normalizing {var_name}")
-    data_to_norm = {} # clear some memory
-val_tds = TensorDataset(X_val)
-val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE)
-X_val = torch.empty(0)
-logger.info("Validation data saved and preprocessed")
-
 # outer nested loops: for each simulation 001-008, for each epoch:
 for i, sim_num in enumerate(SIM_NUMS_TRAIN): 
 
     logger.info(f"Loading simulation {sim_num}")
-
-    # append data (with dim=1) for each variable to X & Y
-    X = torch.empty(0)
-    data_to_norm = {}
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        s3_file_url = f"s3://{s3_bucket}/{s3_path_chunk_1}{sim_num}{s3_path_chunk_2}{sim_num}{var_path}"
-        # open s3 file
-        with fs.open(s3_file_url) as varfile:
-            with xr.open_dataset(varfile, engine="h5netcdf") as ds: # ignore error on lightning.ai
-                # for each vertical level, append with shape (all_time_steps, 1, 192, 288) to X & Y (not to Y if forcing-only) [have to reshape both to switch time & lev]
-                if vert_levels:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].isel(lev=vert_level_indices).to_array().values).reshape(-1, len(vert_level_indices), 192, 288)
-                else:
-                    data_to_norm[var_name] = torch.from_numpy(ds[[var_name]].to_array().values).reshape(-1, 1, 192, 288)
-        logger.info(f"Done loading in {var_name}")
-    normalizer.fit_multiple(data_to_norm)
-    logger.info("Done fitting normalizer")
-    for var_path, var_name, vert_levels, variable_mode in variables:
-        normed_data = normalizer.normalize(data_to_norm[var_name], var_name, 'residual')
-        if variable_mode != "diagnostic":
-            X = torch.concat((X, normed_data), dim=1)
-        data_to_norm[var_name] = None # clear some memory
-        logger.info(f"Done normalizing {var_name}")
-    data_to_norm = {} # clear some memory
-    logger.info("Preprocessing complete")
-
+    X = torch.load(DATA_FILEPATH_STEM+sim_num+".pt")
+    X = X[:, :52]
+    logger.info("Data loaded!")
     tds = TensorDataset(X)
     data_loader = DataLoader(tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
-    X = torch.empty(0)
+    X = torch.ones(0)
+    logger.info("Data moved into dataloader!")
 
     # train for this data multiple times (epochs), logging to w&b
     for single_sim_epoch in range(args.member_epochs):
@@ -199,6 +104,15 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
 
             # validation for this epoch
             model.eval()
+            val_sim = SIM_NUMS_VAL[0]
+            logger.info(f"Loading validation data from {val_sim}")
+            X = torch.load(DATA_FILEPATH_STEM+val_sim+".pt")
+            X = X[:, :52]
+            logger.info("Data loaded!")
+            val_tds = TensorDataset(X)
+            val_loader = DataLoader(val_tds, batch_size=ACE_BATCH_SIZE, shuffle=True)
+            X = torch.ones(0)
+            logger.info("Data moved into dataloader!")
             val_loss = 0.0
             with torch.no_grad():
                 for batch in val_loader:
@@ -210,6 +124,8 @@ for i, sim_num in enumerate(SIM_NUMS_TRAIN):
             avg_val_loss = val_loss / len(val_loader)
             logger.info(f"Validation loss: {avg_val_loss}")
             launchlog.log_epoch({"Validation Loss": avg_val_loss})
+            val_tds = torch.ones(0)
+            val_dataloader = torch.ones(0)
 
     # save checkpoint of model to w&b after all #(single_sim_epoch) epochs on one simulation
     if (i+1)%args.checkpoint_freq == 0:

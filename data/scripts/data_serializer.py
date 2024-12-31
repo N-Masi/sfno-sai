@@ -102,7 +102,7 @@ for sim_num in ENSEMBLE:
         print(f"Done normalizing {var_name}")
     data_to_norm = {} # clear some memory
     print(f"Done loading in all data for member {sim_num}, tensor shape: {data.shape}")
-    filepath = f"data/normed_data_{data.shape[1]}_chans_{sim_num}.pt"
+    filepath = f"../normed_data_{data.shape[1]}_chans_{sim_num}.pt"
     torch.save(data, filepath)
     formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     print(f"Done serializing {sim_num} to {filepath} @ {formatted_time}")
